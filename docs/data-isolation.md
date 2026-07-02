@@ -148,8 +148,8 @@ effective = min(requested, ceiling)
 
 **三档全部实装**（`internal/isolation/`）：
 - 房型路由 `New(requested, root)`：`effective = 请求 ≤ 内最高可达档`；每个机制 boot 时探可用性，`unavailable` 标记保留 Level 以便算 ceiling；解析结果日志 + capabilities/healthz 报 `isolation.{level,mechanism,requested,effective,ceiling}` + `workspace_mount`。
-- **room = landlock**（`landlock_linux.go`）：探 `LandlockGetABIVersion()≥1`；机制 `Wrap` 前缀 `hostel __confine <bedData> --`，`main` 的 `__confine` 子命令 `landlock.V9.BestEffort().RestrictPaths(RODirs 系统路径, RWDirs bedData+/tmp+/dev)` 后 `syscall.Exec`——与 bwrap 外部前缀同构，参考 `../greywall`。
-- 解析规则纯逻辑单测（`resolve_test.go`，注入可用性矩阵，mac 可跑）；**landlock 真机隔离验证待 devbox**（landlock 仅 Linux ≥5.13）。
+- **room = landlock**（`landlock_linux.go`）：boot 探测两级——`LandlockGetABIVersion()≥1` 之外再跑**全形态 smoke**（bwrap 同款哲学：ABI 在场 ≠ 真在执行。用真实 `__confine` 形态确认自己目录可写、假兄弟目录不可读，抓 `BestEffort` 静默 no-op 和 workspace-root 落在 `/tmp` 等共享 RW 路径下的假隔离，探不过诚实降级）；机制 `Wrap` 前缀 `hostel __confine <bedData> --`，`main` 的 `__confine` 子命令 `landlock.V9.BestEffort().RestrictPaths(RODirs 系统路径, RWDirs bedData+/tmp+/dev)` 后 `syscall.Exec`——与 bwrap 外部前缀同构，参考 `../greywall`。
+- 解析规则纯逻辑单测（`resolve_test.go`，注入可用性矩阵，mac 可跑）；**landlock 真机隔离验证待 landlock-enabled 环境**——devbox 已排除：bsk 定制内核（5.15.120.bsk.3）未编译 `CONFIG_SECURITY_LANDLOCK`，内核版本 ≥5.13 不是充分条件，容器共享宿主内核也绕不过；换 stock 内核（Debian 12 / Ubuntu 22.04+，`/sys/kernel/security/lsm` 含 `landlock`）即可验。devbox 上已真机验证的部分：请求 room 时的诚实降级上报（requested/effective/ceiling 四元组）与 dorm 负面对照。
 - per-bed uid 机制仍未做（room 的第二实现，更后）。
 
 依赖：`github.com/landlock-lsm/go-landlock`（仅 linux 文件引用，非 linux 走 `landlock_other.go` 报 room unavailable）。
