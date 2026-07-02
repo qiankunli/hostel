@@ -102,9 +102,12 @@ Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
 
 Persistence: with `--store s3` each bed's workspace is snapshotted to
 `s3://<bucket>/<prefix>/<bedID>.tar.gz` (any S3-compatible endpoint) — restored
-when the bed is created again, persisted on delete / idle reap / explicit
-checkpoint, plus an optional `--persist-interval` safety net. A bed's durable
-identity is the snapshot; the local dir is just its working copy.
+when the bed is created again, persisted on evict (DELETE / idle reap) or
+explicit checkpoint, plus an optional `--persist-interval` safety net. A bed's
+durable identity is the snapshot; the local dir is just its working copy.
+`DELETE /v1/beds/:id` evicts (identity kept); add `?purge=true` to also delete
+the snapshot and end the identity. An evict raced by live traffic returns
+`409 BED_BUSY` instead of dropping mid-flight writes.
 
 Capacity: `--max-beds N` caps concurrent beds (0 = unlimited; the default bed
 is neither refused nor counted). A full instance answers new-bed requests with

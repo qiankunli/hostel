@@ -32,6 +32,7 @@ func randomHex() string {
 // bedView is the JSON shape for a bed in the management API.
 type bedView struct {
 	ID        string    `json:"id"`
+	State     string    `json:"state"` // active | evicting (dormant beds aren't listed)
 	Workspace string    `json:"workspace"`
 	CreatedAt time.Time `json:"created_at"`
 	LastUsed  time.Time `json:"last_used"`
@@ -42,7 +43,7 @@ func (s *Server) bedList(c *gin.Context) {
 	beds := s.mgr.List()
 	out := make([]bedView, 0, len(beds))
 	for _, b := range beds {
-		out = append(out, bedView{ID: b.ID, Workspace: b.Workspace, CreatedAt: b.CreatedAt, LastUsed: b.LastUsed()})
+		out = append(out, bedView{ID: b.ID, State: b.State(), Workspace: b.Workspace, CreatedAt: b.CreatedAt, LastUsed: b.LastUsed()})
 	}
 	c.JSON(http.StatusOK, gin.H{"beds": out})
 }
@@ -64,7 +65,7 @@ func (s *Server) bedCreate(c *gin.Context) {
 		respondBedError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, bedView{ID: b.ID, Workspace: b.Workspace, CreatedAt: b.CreatedAt, LastUsed: b.LastUsed()})
+	c.JSON(http.StatusOK, bedView{ID: b.ID, State: b.State(), Workspace: b.Workspace, CreatedAt: b.CreatedAt, LastUsed: b.LastUsed()})
 }
 
 // GET /v1/beds/:bedId
@@ -74,14 +75,34 @@ func (s *Server) bedGet(c *gin.Context) {
 		respondError(c, http.StatusNotFound, ErrBedInvalid, "bed not found")
 		return
 	}
-	c.JSON(http.StatusOK, bedView{ID: b.ID, Workspace: b.Workspace, CreatedAt: b.CreatedAt, LastUsed: b.LastUsed()})
+	c.JSON(http.StatusOK, bedView{ID: b.ID, State: b.State(), Workspace: b.Workspace, CreatedAt: b.CreatedAt, LastUsed: b.LastUsed()})
 }
 
-// DELETE /v1/beds/:bedId
+// DELETE /v1/beds/:bedId — evict by default (persist, release compute, keep
+// the snapshot identity); ?purge=true ends the identity (snapshot deleted
+// too). An evict canceled by concurrent bed activity returns 409 BED_BUSY —
+// stop sending traffic, then retry.
 func (s *Server) bedDelete(c *gin.Context) {
-	if err := s.mgr.Delete(c.Param("bedId")); err != nil {
+	id := c.Param("bedId")
+	if c.Query("purge") == "true" {
+		if err := s.mgr.Purge(id); err != nil {
+			runtimeError(c, err.Error())
+			return
+		}
+		c.Status(http.StatusOK)
+		return
+	}
+	evicted, err := s.mgr.Evict(id)
+	if err != nil {
 		runtimeError(c, err.Error())
 		return
+	}
+	if !evicted {
+		if _, ok := s.mgr.Get(id); ok {
+			respondError(c, http.StatusConflict, ErrBedBusy, "bed saw activity during eviction; retry after traffic stops")
+			return
+		}
+		// Not ACTIVE at all — idempotent delete.
 	}
 	c.Status(http.StatusOK)
 }

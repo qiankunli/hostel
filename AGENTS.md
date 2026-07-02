@@ -29,7 +29,7 @@ internal/
 
 ## 关键约定
 
-- **bed 是隔离单元 = 对外一个 sandbox**：一 workspace 目录 + 常驻 shell（状态跨命令保持）+ 私有 mount ns（bwrap 下）。**默认 bed 兜底**：不带 bed 的请求落 `default`，单租户调用方可无视 bed 概念；default bed 永不被 idle GC / Delete 清数据，也不占 `--max-beds` 名额。**bed 数量上限**：`--max-beds`（0=不限）只拦新建，满时 429 `BED_LIMIT_EXCEEDED` 作为调度背压；容量经 healthz/capabilities 上报。
+- **bed 是隔离单元 = 对外一个 sandbox**：一 workspace 目录 + 常驻 shell（状态跨命令保持）+ 私有 mount ns（bwrap 下）。**默认 bed 兜底**：不带 bed 的请求落 `default`，单租户调用方可无视 bed 概念；default bed 永不被清数据、不可 purge、不占 `--max-beds` 名额。**生命周期**：ACTIVE→EVICTING→DORMANT（快照即身份，`store.Exists` 判定，无第二注册表）；EVICTING 期间新活动取消驱逐（防 persist 窗口写丢）；`DELETE`=evict、`?purge=true`=终结身份；bed 目录分层 `{root}/{bedID}/{meta.json,data/}`，快照打包 bed 目录（含可移植 meta，顶层 `*.local` 除外），沙箱只见 `data/`。详见 `docs/persistence.md` §四。**bed 数量上限**：`--max-beds`（0=不限）只拦新建，满时 429 `BED_LIMIT_EXCEEDED` 作为调度背压；容量经 healthz/capabilities 上报。
 - **路径语义按模式**：`/workspace/x` 永远是 **file API** 的虚拟前缀（`fsops.Resolve` rebase + 拒绝逃逸）。**bwrap 下** workspace 同时真实挂载在 bed 内 `/workspace`（shell 路径 == file API 路径，cwd 由 `web` 层 `resolveCwd` 按 `Isolator.MountPoint()` 映射）；**direct 下**无挂载能力，shell cwd 是宿主真实目录。调用方以 capabilities 的 `workspace_mount` 探测。
 - **API 对齐 execd**：响应 JSON 结构、错误码、SSE 帧（`<json>\n\n`，事件 shape = execd `ServerStreamEvent`）都对齐 OpenSandbox，SDK 不改。加/改端点先对 `OpenSandbox/specs/execd-api.yaml`。
 - **isolation 是可换后端**：`direct` 无隔离（dev/可信）；`bwrap` linux ns + 数据隔离（tmpfs 遮蔽兄弟 bed / 宿主敏感路径、密钥形 env 剥除、boot 时 probe，见 `docs/data-isolation.md`）。更强（真 setuid/seccomp、overlay CoW、PTY WS）按 OSEP-0013 增补，全走 `Isolator` 接口，不散在业务层。

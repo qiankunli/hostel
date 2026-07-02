@@ -34,6 +34,7 @@ const (
 	ErrCommandNotFound    ErrorCode = "COMMAND_NOT_FOUND"
 	ErrBedInvalid         ErrorCode = "BED_INVALID"
 	ErrBedLimitExceeded   ErrorCode = "BED_LIMIT_EXCEEDED"
+	ErrBedBusy            ErrorCode = "BED_BUSY"
 	ErrServiceUnavailable ErrorCode = "SERVICE_UNAVAILABLE"
 )
 

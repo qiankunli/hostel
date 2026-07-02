@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -91,7 +92,12 @@ func (s *s3Store) Persist(ctx context.Context, bedID, dir string) error {
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
-	if err := packDir(dir, tmp); err != nil {
+	// Top-level *.local files are host-private by convention and stay out of
+	// the portable snapshot (docs/persistence.md §4).
+	skipLocal := func(rel string) bool {
+		return !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".local")
+	}
+	if err := packDir(dir, tmp, skipLocal); err != nil {
 		return fmt.Errorf("store: pack %s: %w", bedID, err)
 	}
 	if _, err := tmp.Seek(0, 0); err != nil {
@@ -126,6 +132,19 @@ func (s *s3Store) Restore(ctx context.Context, bedID, dir string) error {
 	defer out.Body.Close()
 	if err := unpackDir(out.Body, dir); err != nil {
 		return fmt.Errorf("store: unpack %s: %w", bedID, err)
+	}
+	return nil
+}
+
+func (s *s3Store) Delete(ctx context.Context, bedID string) error {
+	ctx, cancel := context.WithTimeout(ctx, s3OpTimeout)
+	defer cancel()
+	// S3 DeleteObject on a missing key succeeds — matching the interface.
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &s.bucket, Key: strPtr(s.key(bedID)),
+	})
+	if err != nil {
+		return fmt.Errorf("store: delete %s: %w", s.key(bedID), err)
 	}
 	return nil
 }

@@ -129,8 +129,8 @@ func TestDeleteBedReleasesAndRemoves(t *testing.T) {
 	m := newTestManager(t)
 	b, _ := m.Resolve("conv-x")
 	_, _ = m.ForegroundShell(b)
-	if err := m.Delete("conv-x"); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if ok, err := m.Evict("conv-x"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
 	}
 	if _, ok := m.Get("conv-x"); ok {
 		t.Fatal("bed should be gone after Delete")
@@ -175,9 +175,9 @@ func TestMaxBedsCap(t *testing.T) {
 	if _, err := m.Resolve(""); err != nil {
 		t.Fatalf("default bed exempt: %v", err)
 	}
-	// Deleting frees a slot.
-	if err := m.Delete("a"); err != nil {
-		t.Fatalf("delete a: %v", err)
+	// Evicting frees a slot.
+	if ok, err := m.Evict("a"); err != nil || !ok {
+		t.Fatalf("evict a: ok=%v err=%v", ok, err)
 	}
 	if _, err := m.Resolve("c"); err != nil {
 		t.Fatalf("bed c after free slot: %v", err)
@@ -203,7 +203,10 @@ func (f *fakeStore) Exists(_ context.Context, id string) (bool, error) {
 func (f *fakeStore) Restore(_ context.Context, id, dir string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return os.WriteFile(filepath.Join(dir, "restored.txt"), f.snaps[id], 0o644)
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "data", "restored.txt"), f.snaps[id], 0o644)
 }
 func (f *fakeStore) Persist(_ context.Context, id, dir string) error {
 	f.mu.Lock()
@@ -211,8 +214,16 @@ func (f *fakeStore) Persist(_ context.Context, id, dir string) error {
 	if f.fail {
 		return errors.New("fake persist failure")
 	}
-	data, _ := os.ReadFile(filepath.Join(dir, "data.txt"))
+	// dir is the bed dir: meta.json + data/. Mimic that shape.
+	data, _ := os.ReadFile(filepath.Join(dir, "data", "data.txt"))
 	f.snaps[id] = data
+	return nil
+}
+
+func (f *fakeStore) Delete(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.snaps, id)
 	return nil
 }
 
@@ -229,11 +240,11 @@ func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("payload"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Delete("conv-1"); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if ok, err := m.Evict("conv-1"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
 	}
-	if _, err := os.Stat(b.Workspace); !os.IsNotExist(err) {
-		t.Fatal("workspace should be removed after delete")
+	if _, err := os.Stat(b.Dir); !os.IsNotExist(err) {
+		t.Fatal("bed dir should be removed after evict")
 	}
 	if string(fs.snaps["conv-1"]) != "payload" {
 		t.Fatalf("snapshot content = %q", fs.snaps["conv-1"])
@@ -256,8 +267,8 @@ func TestPersistFailureAbortsDelete(t *testing.T) {
 	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
 
 	b, _ := m.Resolve("conv-2")
-	if err := m.Delete("conv-2"); err == nil {
-		t.Fatal("Delete should fail when persist fails")
+	if _, err := m.Evict("conv-2"); err == nil {
+		t.Fatal("Evict should fail when persist fails")
 	}
 	// Bed must survive: not deleted from the map, workspace intact.
 	if _, ok := m.Get("conv-2"); !ok {
@@ -338,5 +349,112 @@ func TestDyingShellDoesNotDeadlock(t *testing.T) {
 	}
 	if res, err := sh2.Run(context.Background(), "echo back", nil); err != nil || res.ExitCode != 0 {
 		t.Fatalf("recovered shell run: %v %+v", err, res)
+	}
+}
+
+// slowStore wraps fakeStore with a controllable persist delay, to widen the
+// eviction window for the cancel-race test.
+type slowStore struct {
+	*fakeStore
+	gate chan struct{} // Persist blocks until this closes
+}
+
+func (s *slowStore) Persist(ctx context.Context, id, dir string) error {
+	<-s.gate
+	return s.fakeStore.Persist(ctx, id, dir)
+}
+
+// Activity during an evict's persist window must CANCEL the eviction —
+// otherwise writes landing after the snapshot are silently destroyed with the
+// workspace (docs/persistence.md §4).
+func TestEvictCanceledByActivity(t *testing.T) {
+	root := t.TempDir()
+	ss := &slowStore{fakeStore: newFakeStore(), gate: make(chan struct{})}
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, ss)
+
+	b, _ := m.Resolve("conv-race")
+	res := make(chan struct {
+		ok  bool
+		err error
+	}, 1)
+	go func() {
+		ok, err := m.Evict("conv-race")
+		res <- struct {
+			ok  bool
+			err error
+		}{ok, err}
+	}()
+
+	// While persist is blocked on the gate, the bed sees new activity.
+	time.Sleep(10 * time.Millisecond) // let Evict reach Persist
+	if b.State() != "evicting" {
+		t.Fatalf("state during persist = %q, want evicting", b.State())
+	}
+	b.touch()
+	close(ss.gate)
+
+	r := <-res
+	if r.err != nil || r.ok {
+		t.Fatalf("Evict = (%v, %v), want canceled (false, nil)", r.ok, r.err)
+	}
+	// Bed survived, back to active, still resolvable.
+	if b.State() != "active" {
+		t.Fatalf("state after canceled evict = %q", b.State())
+	}
+	if _, ok := m.Get("conv-race"); !ok {
+		t.Fatal("bed should still be ACTIVE after canceled evict")
+	}
+}
+
+func TestPurgeEndsIdentity(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-p")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("x"), 0o644)
+	if ok, _ := m.Evict("conv-p"); !ok {
+		t.Fatal("evict failed")
+	}
+	if ok, _ := fs.Exists(context.Background(), "conv-p"); !ok {
+		t.Fatal("snapshot should exist after evict (DORMANT)")
+	}
+	// Purge the dormant bed: snapshot gone, resolve starts fresh.
+	if err := m.Purge("conv-p"); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	if ok, _ := fs.Exists(context.Background(), "conv-p"); ok {
+		t.Fatal("snapshot should be deleted after purge")
+	}
+	b2, _ := m.Resolve("conv-p")
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err == nil {
+		t.Fatal("purged bed must start empty, not restored")
+	}
+	// Default bed is not purgeable.
+	if err := m.Purge("default"); err == nil {
+		t.Fatal("purging the default bed must be refused")
+	}
+}
+
+func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+
+	b, _ := m.Resolve("default")
+	// Layout: {root}/default/{meta.json,data}; Workspace points at data.
+	if b.Workspace != filepath.Join(root, "default", "data") {
+		t.Fatalf("Workspace = %s", b.Workspace)
+	}
+	if _, err := os.Stat(filepath.Join(b.Dir, "meta.json")); err != nil {
+		t.Fatalf("meta.json missing: %v", err)
+	}
+	created := b.CreatedAt
+
+	// "Restart": a new Manager over the same root sees the same identity.
+	time.Sleep(5 * time.Millisecond)
+	m2, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+	b2, _ := m2.Resolve("default")
+	if !b2.CreatedAt.Equal(created) {
+		t.Fatalf("CreatedAt not preserved across restart: %v vs %v", b2.CreatedAt, created)
 	}
 }
