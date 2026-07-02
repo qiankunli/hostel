@@ -94,11 +94,31 @@ bed), with outputs saved into that bed's workspace. v1 wires the teardown hook
 (a bed's slices are released when the bed is deleted or times out); the actual
 Chromium/Jupyter integrations come later.
 
+## Amenities (shared facilities)
+
+Heavyweight, natively multi-tenant tools run **once** per hostel and are sliced
+per bed. The first is **Chromium**: one shared browser, an isolated
+BrowserContext per bed, artifacts saved into the bed workspace. Enable by
+shipping a chromium binary (`--chromium-path`, or it's probed) or attaching to
+an existing instance (`--chromium-cdp-url`). Bed-scoped verbs (the raw CDP
+socket is never exposed):
+
+```
+POST /v1/beds/:id/browser/goto        {url}
+POST /v1/beds/:id/browser/screenshot  {path?}   # saved under the bed workspace
+POST /v1/beds/:id/browser/text
+POST /v1/beds/:id/browser/close
+```
+
+The browser starts on first use and stops after an idle grace; capabilities
+reports `amenities: {chromium: idle|running}`.
+
 ## Configuration
 
 Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
 `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` / `--store` /
-`--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval`.
+`--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval` /
+`--chromium-path` / `--chromium-cdp-url` / `--chromium-idle-stop`.
 
 Persistence: with `--store s3` each bed's workspace is snapshotted to
 `s3://<bucket>/<prefix>/<bedID>.tar.gz` (any S3-compatible endpoint) — restored

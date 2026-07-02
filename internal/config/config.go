@@ -55,6 +55,11 @@ type Config struct {
 	// PersistInterval is the periodic snapshot safety net (0 = only at
 	// lifecycle boundaries). Bounds how much work a crash can lose.
 	PersistInterval time.Duration
+
+	// Chromium amenity (docs/amenity.md): launch (path) or attach (CDP URL).
+	ChromiumPath     string
+	ChromiumCDPURL   string
+	ChromiumIdleStop time.Duration
 	// ShellPath is the shell binary a bed's long-running session runs.
 	ShellPath string
 }
@@ -75,10 +80,14 @@ func Load(args []string) *Config {
 	fs.StringVar(&c.S3Prefix, "s3-prefix", envStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")
 	fs.StringVar(&c.S3Endpoint, "s3-endpoint", envStr("HOSTEL_S3_ENDPOINT", ""), "S3-compatible endpoint (empty = AWS)")
 	persist := fs.Duration("persist-interval", envDur("HOSTEL_PERSIST_INTERVAL", 0), "periodic snapshot interval, 0=lifecycle boundaries only")
+	fs.StringVar(&c.ChromiumPath, "chromium-path", envStr("HOSTEL_CHROMIUM_PATH", ""), "chromium binary for the browser amenity (empty = probe PATH)")
+	fs.StringVar(&c.ChromiumCDPURL, "chromium-cdp-url", envStr("HOSTEL_CHROMIUM_CDP_URL", ""), "attach to an existing Chromium CDP endpoint instead of launching")
+	idleStop := fs.Duration("chromium-idle-stop", envDur("HOSTEL_CHROMIUM_IDLE_STOP", 5*time.Minute), "stop a launched Chromium this long after its last tenant, 0=never")
 	// Ignore parse errors for unknown flags in tests; flag prints usage itself.
 	_ = fs.Parse(args)
 	c.BedIdleTimeout = *idle
 	c.PersistInterval = *persist
+	c.ChromiumIdleStop = *idleStop
 	return c
 }
 

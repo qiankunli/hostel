@@ -29,8 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/isolation"
-	"github.com/qiankunli/hostel/internal/service"
 	"github.com/qiankunli/hostel/internal/store"
 )
 
@@ -82,7 +82,7 @@ type Manager struct {
 	defaultBed string
 	iso        isolation.Isolator
 	shellPath  string
-	services   *service.Registry // nil-safe; ReleaseAll on bed teardown
+	amenities  *amenity.Registry // nil-safe; ReleaseAll on bed teardown
 	commands   *CommandRegistry  // one-shot commands, daemon-global ids
 	maxBeds    int               // cap on concurrent beds; 0 = unlimited
 	store      store.Store       // workspace persistence (Noop when disabled)
@@ -97,8 +97,8 @@ type Manager struct {
 var ErrBedLimit = errors.New("bed: max bed count reached")
 
 // NewManager creates the bed manager and ensures the workspace root exists.
-// services and st may be nil; maxBeds 0 = unlimited.
-func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, services *service.Registry, maxBeds int, st store.Store) (*Manager, error) {
+// amenities and st may be nil; maxBeds 0 = unlimited.
+func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, amenities *amenity.Registry, maxBeds int, st store.Store) (*Manager, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace root %s: %w", root, err)
 	}
@@ -110,7 +110,7 @@ func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, serv
 		defaultBed: defaultBed,
 		iso:        iso,
 		shellPath:  shellPath,
-		services:   services,
+		amenities:  amenities,
 		commands:   newCommandRegistry(),
 		maxBeds:    maxBeds,
 		store:      st,
@@ -121,8 +121,8 @@ func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, serv
 // Isolator exposes the configured isolator (for /healthz + capabilities).
 func (m *Manager) Isolator() isolation.Isolator { return m.iso }
 
-// Services exposes the managed-service registry (for capabilities reporting).
-func (m *Manager) Services() *service.Registry { return m.services }
+// Amenities exposes the amenity manager (for capabilities + web adapters).
+func (m *Manager) Amenities() *amenity.Registry { return m.amenities }
 
 // Commands exposes the one-shot command registry (spec /command endpoints are
 // bed-agnostic on status/logs lookups — command ids are daemon-global).
@@ -289,13 +289,16 @@ func (m *Manager) Evict(id string) (bool, error) {
 	return true, os.RemoveAll(b.Dir)
 }
 
+// ErrPurgeDefault marks a client mistake (4xx), not a server failure: the
+// default bed is the single-tenant fallback and cannot be purged.
+var ErrPurgeDefault = errors.New("bed: refusing to purge the default bed")
+
 // Purge ends a bed's identity: tear down (no persist), remove the local dir,
 // and delete the snapshot. Explicitly destructive — the caller asked for the
-// data to be gone, so concurrent activity does not cancel it. The default bed
-// cannot be purged (it is the single-tenant fallback).
+// data to be gone, so concurrent activity does not cancel it.
 func (m *Manager) Purge(id string) error {
 	if id == "" || id == m.defaultBed {
-		return fmt.Errorf("bed: refusing to purge the default bed")
+		return ErrPurgeDefault
 	}
 	m.mu.Lock()
 	b, ok := m.beds[id]
@@ -323,7 +326,7 @@ func (m *Manager) teardown(b *Bed) {
 	}
 	b.mu.Unlock()
 	m.commands.killBed(b.ID)
-	m.services.ReleaseAll(b.ID)
+	m.amenities.ReleaseAll(b.ID)
 }
 
 // persistBed snapshots the bed dir (portable meta + data) and, on success,

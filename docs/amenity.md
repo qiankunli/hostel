@@ -1,0 +1,86 @@
+# amenity：共享设施（Chromium / Jupyter …）
+
+> 原名 managed-service。改名 **amenity**（旅舍公共设施）：与 hostel/bed 隐喻同构——**一份设施全体住客共用，每人用自己的那一格**（厨房之于住客 ≈ Chromium 之于 bed）。
+
+## 一、理念
+
+1. **为什么不是每 bed 一个进程**：Chromium / Jupyter 这类进程重（启动秒级、常驻数百 MB），per-bed 起一份会吃掉共享 pod 的密度收益。但它们**天生多租户**——Chromium 有 BrowserContext（cookie/存储/缓存全隔离），Jupyter 有 kernel。amenity 框架就是把"进程级共享 + 应用原生机制切租"固化成一等公民。
+2. **切片归 bed、产物落 bed**：一个 bed 的切片（BrowserContext / kernel）随 bed 生命周期走（evict/purge 时释放）；截图、下载、执行产物写进该 bed 的 `data/`——于是 file API 能读、快照会带走、别的 bed 看不见。
+3. **北向不裸暴露共享进程**：browser 级 CDP websocket 能看到**所有** context——把它交给某个 bed 的调用方等于跨租户泄漏。所以对外只暴露 **bed 级动作 API**（hostel 在中间持有 CDP 连接并把动作路由到该 bed 自己的 context），不透传 browser ws。
+
+### 与 OpenSandbox/execd 的关系（为什么无先例可抄）
+
+execd **不管理** Chromium/Jupyter：OpenSandbox 一 sandbox 一容器，浏览器由专门镜像的 supervisor 拉起（`examples/chrome`：VNC + Chromium :9222），每容器一份、容器边界即租户边界，故可裸暴露 CDP；execd 的 `/code` 也只是既有 Jupyter server 的**客户端**（`--jupyter-host`）。hostel 的密度模型（一进程 N bed）让"每 bed 一份"不成立，共享 + 切租 + 不裸暴露成为必需——amenity 是这个模型带出的新需求，是 hostel 相对 execd 的真差集。
+
+借鉴其客户端形态：amenity 支持 **launch-or-attach**——默认自己拉起 Chromium（`--chromium-path`），也可 attach 到既有实例（`--chromium-cdp-url`，如 sidecar/supervisor 管进程的部署形态），此时 hostel 只做切租、不管进程生死（探活仍做，失联即设施不可用）。
+
+## 二、流程（Chromium 实例）
+
+```
+hostel 启动 → --chromium-cdp-url 设置? → attach 模式（探活既有实例）
+            → 否则探测 chromium 二进制（--chromium-path / 常见路径）
+              都无 → amenity 不可用，capabilities 如实上报（amenities: []）
+
+bed 首次调用 browser 动作
+  → 惰性启动共享 Chromium（headless，CDP 只听 loopback，user-data-dir 在 hostel 私有目录）
+  → Target.createBrowserContext 为该 bed 建隔离 context（下载目录指到 bed 的 data/downloads）
+  → 动作在该 context 内执行，产物落 bed data/
+
+bed evict / purge / idle → ReleaseTenant → disposeBrowserContext（cookie 等运行态随之消失）
+Chromium 崩溃 → 探活发现 → 重启进程，全部 tenant 失效重建（调用方视角：动作报错后重试即可）
+```
+
+## 三、关键设计
+
+### 1. Amenity 接口（原 ManagedService 更名，语义不变）
+
+```go
+type Amenity interface {
+    Name() string                                        // "chromium"
+    AcquireTenant(bedID, workspace string) (Tenant, error) // 惰性建切片
+    ReleaseTenant(bedID string) error                    // bed evict/purge 时
+    Healthy() bool
+}
+```
+
+包名 `service` → `amenity`。Registry 不变（bed 生命周期已接 `ReleaseAll`）。amenity 实现允许依赖具体协议库（chromedp），但**不允许出现 HTTP 类型**——动作到 HTTP 的映射仍在 `web/` 薄层。
+
+### 2. 北向 API：bed 级动作，v1 刻意小
+
+```
+POST /v1/beds/:bedId/browser/goto        {url}            → {title, url}
+POST /v1/beds/:bedId/browser/screenshot  {path?}          → {path}   # 落 bed data/，file API 可取
+POST /v1/beds/:bedId/browser/text        {}               → {text}   # 当前页可读文本
+POST /v1/beds/:bedId/browser/close       {}               → 释放该 bed 的 context
+```
+
+- 动作集 v1 只有 goto / screenshot / text / close——覆盖 agent 最高频的"打开-看-截"，点击/输入/JS 求值等交互动作 v1.1 按需加（参照内部 as serve 的动作清单渐进）。
+- 不提供 browser 级 CDP ws 透传（见理念 3）；将来若要支持 playwright 直连，走"页面级 target ws + 校验 targetId 归属"的受限代理，单独设计。
+
+### 3. CDP 客户端选型：chromedp
+
+用 `chromedp`（内部 sandbox 仓同款，成熟）而非手写 CDP：每 bed 的 tenant 持有一个 chromedp Context（绑定其 BrowserContext），动作即 chromedp Tasks。依赖增量可接受（纯 Go，无 cgo）。
+
+### 4. 与既有机制的咬合
+
+- **数据隔离**：Chromium 进程跑在 bed 沙箱**外**（hostel 同级），不经 bwrap——它是 hostel 的受管基础设施而非 bed 内代码；bed 只能通过动作 API 使用自己的切片。
+- **持久化**：产物（截图/下载）在 data/ 里自然进快照;**context 运行态（cookie/localStorage）不持久**——evict 后 resume，浏览器状态从零开始（文档明示；将来可选 cookie 导出进 meta）。
+- **资源隔离**：Chromium 进独立 cgroup 子组（`resource-isolation.md` 已留 `services/` 位），bed 级用量归因明确不做。
+- **max-beds/背压**：tenant 数天然 ≤ bed 数，不单设上限。
+
+### 5. 部署前提：launch 或 attach
+
+launch 模式：镜像里带 chromium/chrome 二进制（`--chromium-path` 或 PATH 探测）。attach 模式：`--chromium-cdp-url` 指向既有实例（sidecar/supervisor 部署形态，与 execd `--jupyter-host` 同构）。两者都无则该 amenity 缺席、其余功能不受影响——hostel 保持"单二进制可跑，设施按部署配置渐进点亮"。
+
+## 实现状态
+
+已实现（`internal/amenity/`）：`Amenity` 接口（含 `State()` 生命周期：unavailable/idle/running）+ `Registry`（amenity manager）；**chromium** 首个实例——launch-or-attach boot 探测、惰性启动、每 bed 一个 BrowserContext（cookie/存储隔离）、下载与截图落 bed `data/`、last-tenant idle-stop 自停、崩溃/停后按需重启。北向 4 端点 `POST /v1/beds/:id/browser/{goto,screenshot,text,close}`（chromedp）；capabilities 报 `amenities: {chromium: idle|running}`。真浏览器 e2e 通过（两 bed context 隔离、截图路径落对 workspace、逃逸拒绝、idle-stop、重启）。
+
+一个实现注意（写进代码注释）：per-bed tab 必须先在**长命 tabCtx** 上 attach 一次，否则首个动作把 target 绑到派生的超时 context，cancel 即 detach，后续动作全 hang。context 管理动作走 **browser executor**（`cdp.WithExecutor(ctx, ...Browser)`），否则 `Not allowed`。
+
+## 非目标（v1）
+
+- Jupyter amenity（第二个实例，验证框架通用性后加）；
+- browser CDP ws 透传 / playwright 直连；
+- 交互动作全集（click/type/scroll/evaluate）；
+- context 状态持久化（cookie 随 evict 消失）。

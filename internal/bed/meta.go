@@ -16,6 +16,7 @@ package bed
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -44,18 +45,36 @@ func loadMeta(bedDir string) (bedMeta, bool) {
 	var m bedMeta
 	data, err := os.ReadFile(metaPath(bedDir))
 	if err != nil {
-		return m, false
+		return m, false // missing = fresh bed; other errors surface on save
 	}
-	if json.Unmarshal(data, &m) != nil {
+	if err := json.Unmarshal(data, &m); err != nil {
+		// A corrupt meta gets rebuilt by the caller — losing CreatedAt is
+		// survivable, but never silently: this is the bed's identity record.
+		log.Printf("bed: corrupt %s in %s (%v); rebuilding meta", metaFile, bedDir, err)
 		return bedMeta{}, false
 	}
 	return m, true
 }
 
+// saveMeta writes atomically (temp + rename): meta.json is the bed's sole
+// identity record — a crash mid-write must not truncate it.
 func saveMeta(bedDir string, m bedMeta) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metaPath(bedDir), data, 0o644)
+	tmp, err := os.CreateTemp(bedDir, ".meta-*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), metaPath(bedDir))
 }
