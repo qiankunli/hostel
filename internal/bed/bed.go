@@ -20,6 +20,7 @@
 package bed
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/qiankunli/hostel/internal/isolation"
 	"github.com/qiankunli/hostel/internal/service"
+	"github.com/qiankunli/hostel/internal/store"
 )
 
 // Bed is one isolation unit.
@@ -38,9 +40,10 @@ type Bed struct {
 	Workspace string // host dir backing the bed's virtual /workspace
 	CreatedAt time.Time
 
-	mu       sync.Mutex
-	lastUsed time.Time
-	shells   map[string]*Shell // stateful bash sessions (spec /session)
+	mu          sync.Mutex
+	lastUsed    time.Time
+	persistedAt time.Time         // last successful snapshot (zero = never)
+	shells      map[string]*Shell // stateful bash sessions (spec /session)
 }
 
 func (b *Bed) touch() {
@@ -65,6 +68,7 @@ type Manager struct {
 	services   *service.Registry // nil-safe; ReleaseAll on bed teardown
 	commands   *CommandRegistry  // one-shot commands, daemon-global ids
 	maxBeds    int               // cap on concurrent beds; 0 = unlimited
+	store      store.Store       // workspace persistence (Noop when disabled)
 
 	mu   sync.Mutex
 	beds map[string]*Bed
@@ -76,10 +80,13 @@ type Manager struct {
 var ErrBedLimit = errors.New("bed: max bed count reached")
 
 // NewManager creates the bed manager and ensures the workspace root exists.
-// services may be nil; maxBeds 0 = unlimited.
-func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, services *service.Registry, maxBeds int) (*Manager, error) {
+// services and st may be nil; maxBeds 0 = unlimited.
+func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, services *service.Registry, maxBeds int, st store.Store) (*Manager, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace root %s: %w", root, err)
+	}
+	if st == nil {
+		st = store.Noop{}
 	}
 	return &Manager{
 		root:       root,
@@ -89,6 +96,7 @@ func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, serv
 		services:   services,
 		commands:   newCommandRegistry(),
 		maxBeds:    maxBeds,
+		store:      st,
 		beds:       make(map[string]*Bed),
 	}, nil
 }
@@ -105,6 +113,9 @@ func (m *Manager) Commands() *CommandRegistry { return m.commands }
 
 // MaxBeds reports the configured cap (0 = unlimited) for capacity reporting.
 func (m *Manager) MaxBeds() int { return m.maxBeds }
+
+// StoreName reports the persistence backend for capabilities reporting.
+func (m *Manager) StoreName() string { return m.store.Name() }
 
 // DefaultBedID reports the id used when a request omits a bed.
 func (m *Manager) DefaultBedID() string { return m.defaultBed }
@@ -141,7 +152,18 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace %s: %w", ws, err)
 	}
-	b := &Bed{ID: id, Workspace: ws, CreatedAt: time.Now(), lastUsed: time.Now(), shells: make(map[string]*Shell)}
+	// Resume-from-snapshot: if the bed has a durable copy, hydrate the fresh
+	// workspace BEFORE serving. A restore failure fails the resolve — silently
+	// starting empty when a snapshot exists would look like data loss.
+	if ok, err := m.store.Exists(context.Background(), id); err != nil {
+		return nil, fmt.Errorf("bed: check snapshot %s: %w", id, err)
+	} else if ok {
+		if err := m.store.Restore(context.Background(), id, ws); err != nil {
+			return nil, fmt.Errorf("bed: restore %s: %w", id, err)
+		}
+	}
+	now := time.Now()
+	b := &Bed{ID: id, Workspace: ws, CreatedAt: now, lastUsed: now, persistedAt: now, shells: make(map[string]*Shell)}
 	m.beds[id] = b
 	return b, nil
 }
@@ -169,21 +191,31 @@ func (m *Manager) List() []*Bed {
 }
 
 // Delete tears a bed down: shells killed, service tenants released, workspace
-// removed. The default bed keeps its workspace (only runtime state resets) so
-// single-tenant callers can never lose their data to a stray DELETE.
+// persisted (release compute, keep identity — docs/persistence.md) and then
+// removed. A persist failure ABORTS the delete: destroying the only copy is
+// worse than leaving the bed alive for a retry. The default bed keeps its
+// workspace (only runtime state resets) so single-tenant callers can never
+// lose their data to a stray DELETE.
 func (m *Manager) Delete(id string) error {
 	if id == "" {
 		id = m.defaultBed
 	}
 	m.mu.Lock()
 	b, ok := m.beds[id]
-	if ok {
-		delete(m.beds, id)
-	}
 	m.mu.Unlock()
 	if !ok {
 		return nil
 	}
+	// Snapshot before any destructive step (shells are about to die anyway,
+	// but the workspace must survive a persist failure).
+	if id != m.defaultBed {
+		if err := m.store.Persist(context.Background(), id, b.Workspace); err != nil {
+			return fmt.Errorf("bed: persist before delete %s: %w", id, err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.beds, id)
+	m.mu.Unlock()
 	b.mu.Lock()
 	for sid, sh := range b.shells {
 		sh.Close()
@@ -196,6 +228,46 @@ func (m *Manager) Delete(id string) error {
 		return nil
 	}
 	return os.RemoveAll(b.Workspace)
+}
+
+// Checkpoint snapshots a bed's workspace now, without tearing it down.
+// Best-effort consistency: hostel does not quiesce running commands yet —
+// callers should checkpoint at their own idle points (docs/persistence.md §4).
+func (m *Manager) Checkpoint(ctx context.Context, id string) error {
+	b, ok := m.Get(id)
+	if !ok {
+		return fmt.Errorf("bed: unknown bed %q", id)
+	}
+	if err := m.store.Persist(ctx, b.ID, b.Workspace); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.persistedAt = time.Now()
+	b.mu.Unlock()
+	return nil
+}
+
+// PersistDirty is the periodic safety net: snapshot every bed touched since
+// its last snapshot. Best-effort — a failed bed is retried next tick. Returns
+// ids persisted. The default bed is included (its data matters most).
+func (m *Manager) PersistDirty(ctx context.Context) []string {
+	var done []string
+	for _, b := range m.List() {
+		b.mu.Lock()
+		dirty := b.lastUsed.After(b.persistedAt)
+		b.mu.Unlock()
+		if !dirty {
+			continue
+		}
+		if err := m.store.Persist(ctx, b.ID, b.Workspace); err != nil {
+			continue
+		}
+		b.mu.Lock()
+		b.persistedAt = time.Now()
+		b.mu.Unlock()
+		done = append(done, b.ID)
+	}
+	return done
 }
 
 // CollectIdle reaps beds idle longer than timeout (0 disables). Returns reaped

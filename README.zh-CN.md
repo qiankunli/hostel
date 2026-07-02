@@ -44,7 +44,7 @@ curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: con
 | 目录 | `GET /directories/list`、`POST /directories`、`DELETE /directories` |
 | 命令 | `POST /command`(SSE)、`DELETE /command`、`GET /command/status/:id`、`GET /command/:id/logs` |
 | 会话 | `POST /session`、`POST /session/:id/run`(SSE)、`DELETE /session/:id` |
-| bed 管理 | `GET/POST /v1/beds`、`GET/DELETE /v1/beds/:id`、`GET /v1/beds/capabilities` |
+| bed 管理 | `GET/POST /v1/beds`、`GET/DELETE /v1/beds/:id`、`POST /v1/beds/:id/checkpoint`、`GET /v1/beds/capabilities` |
 
 路径语义：客户端用 `/workspace/...` 寻址，hostel rebase 到该 bed 的 workspace 目录；相对路径即 workspace 相对；workspace 之外的绝对路径被拒绝（bed 看不到宿主）。`bwrap` 下 workspace 还会**真实挂载**在沙箱内 `/workspace`——shell 路径与 file API 路径同名同物；`direct` 下（无 mount namespace）shell cwd 是宿主真实目录。以 capabilities 的 `workspace_mount` 区分两种模式。
 
@@ -61,7 +61,9 @@ curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: con
 
 ## 配置
 
-Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isolation` / `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds`。
+Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isolation` / `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` / `--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval`。
+
+持久化：`--store s3` 时每个 bed 的 workspace 快照到 `s3://<bucket>/<prefix>/<bedID>.tar.gz`（任意 S3 兼容端点）——同 id 再建时恢复,删除 / idle 回收 / 显式 checkpoint 时持久化,另有 `--persist-interval` 周期兜底。bed 的持久身份是快照,本地目录只是工作副本。
 
 容量：`--max-beds N` 限制并发 bed 数（0 = 不限；default bed 不被拒绝也不计数）。实例满时新建 bed 返回 `429 BED_LIMIT_EXCEEDED`——这是给调度方的背压信号（换个实例放置）；当前/最大数量由 `/healthz` 与 capabilities 上报。
 

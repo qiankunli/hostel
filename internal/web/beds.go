@@ -101,6 +101,7 @@ func (s *Server) capabilities(c *gin.Context) {
 		// under direct, where /workspace is only the file-API virtual prefix.
 		"workspace_mount":  iso.MountPoint() != "",
 		"max_beds":         s.mgr.MaxBeds(),
+		"persistence":      s.mgr.StoreName(),
 		"files":            true,
 		"directories":      true,
 		"command":          true,
@@ -112,4 +113,15 @@ func (s *Server) capabilities(c *gin.Context) {
 		"code":           false,
 		"overlay_commit": false,
 	})
+}
+
+// POST /v1/beds/:bedId/checkpoint — snapshot the bed's workspace now, without
+// tearing it down. 200 with the persistence backend on success.
+func (s *Server) bedCheckpoint(c *gin.Context) {
+	id := c.Param("bedId")
+	if err := s.mgr.Checkpoint(c.Request.Context(), id); err != nil {
+		runtimeError(c, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"persistence": s.mgr.StoreName()})
 }

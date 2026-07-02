@@ -103,6 +103,7 @@ func (s *Server) routes() {
 		v1.GET("/capabilities", s.capabilities)
 		v1.GET("/:bedId", s.bedGet)
 		v1.DELETE("/:bedId", s.bedDelete)
+		v1.POST("/:bedId/checkpoint", s.bedCheckpoint)
 	}
 }
 
@@ -139,6 +140,7 @@ func (s *Server) healthz(c *gin.Context) {
 		"workspace_mount": iso.MountPoint() != "",
 		"beds":            len(s.mgr.List()),
 		"max_beds":        s.mgr.MaxBeds(),
+		"persistence":     s.mgr.StoreName(),
 		"default_bed":     s.mgr.DefaultBedID(),
 	})
 }
