@@ -17,7 +17,10 @@ package bed
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,7 +30,7 @@ import (
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	root := t.TempDir()
-	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0)
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -150,7 +153,7 @@ func TestCollectIdleSkipsDefault(t *testing.T) {
 
 func TestMaxBedsCap(t *testing.T) {
 	root := t.TempDir()
-	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 2)
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 2, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -178,5 +181,110 @@ func TestMaxBedsCap(t *testing.T) {
 	}
 	if _, err := m.Resolve("c"); err != nil {
 		t.Fatalf("bed c after free slot: %v", err)
+	}
+}
+
+// fakeStore is an in-memory Store for lifecycle tests.
+type fakeStore struct {
+	mu    sync.Mutex
+	snaps map[string][]byte // bedID → marker file content
+	fail  bool              // force Persist to fail
+}
+
+func newFakeStore() *fakeStore { return &fakeStore{snaps: map[string][]byte{}} }
+
+func (f *fakeStore) Name() string { return "fake" }
+func (f *fakeStore) Exists(_ context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.snaps[id]
+	return ok, nil
+}
+func (f *fakeStore) Restore(_ context.Context, id, dir string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return os.WriteFile(filepath.Join(dir, "restored.txt"), f.snaps[id], 0o644)
+}
+func (f *fakeStore) Persist(_ context.Context, id, dir string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return errors.New("fake persist failure")
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "data.txt"))
+	f.snaps[id] = data
+	return nil
+}
+
+func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Write data into a bed, delete it → snapshot taken, workspace gone.
+	b, _ := m.Resolve("conv-1")
+	if err := os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Delete("conv-1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(b.Workspace); !os.IsNotExist(err) {
+		t.Fatal("workspace should be removed after delete")
+	}
+	if string(fs.snaps["conv-1"]) != "payload" {
+		t.Fatalf("snapshot content = %q", fs.snaps["conv-1"])
+	}
+
+	// Re-resolve the same bed id → restored before serving.
+	b2, err := m.Resolve("conv-1")
+	if err != nil {
+		t.Fatalf("re-Resolve: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err != nil {
+		t.Fatalf("restore marker missing: %v", err)
+	}
+}
+
+func TestPersistFailureAbortsDelete(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	fs.fail = true
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-2")
+	if err := m.Delete("conv-2"); err == nil {
+		t.Fatal("Delete should fail when persist fails")
+	}
+	// Bed must survive: not deleted from the map, workspace intact.
+	if _, ok := m.Get("conv-2"); !ok {
+		t.Fatal("bed should still exist after aborted delete")
+	}
+	if _, err := os.Stat(b.Workspace); err != nil {
+		t.Fatalf("workspace should be intact: %v", err)
+	}
+}
+
+func TestPersistDirty(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-3")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("v1"), 0o644)
+
+	// Freshly created bed: persistedAt == created time; touch to mark dirty.
+	time.Sleep(5 * time.Millisecond)
+	b.touch()
+	done := m.PersistDirty(context.Background())
+	if len(done) != 1 || done[0] != "conv-3" {
+		t.Fatalf("PersistDirty = %v, want [conv-3]", done)
+	}
+	// Untouched since → not persisted again.
+	if done := m.PersistDirty(context.Background()); len(done) != 0 {
+		t.Fatalf("second PersistDirty = %v, want []", done)
 	}
 }

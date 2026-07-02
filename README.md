@@ -62,7 +62,7 @@ curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: con
 | Directories | `GET /directories/list`, `POST /directories`, `DELETE /directories` |
 | Command | `POST /command` (SSE), `DELETE /command`, `GET /command/status/:id`, `GET /command/:id/logs` |
 | Session | `POST /session`, `POST /session/:id/run` (SSE), `DELETE /session/:id` |
-| Beds | `GET/POST /v1/beds`, `GET/DELETE /v1/beds/:id`, `GET /v1/beds/capabilities` |
+| Beds | `GET/POST /v1/beds`, `GET/DELETE /v1/beds/:id`, `POST /v1/beds/:id/checkpoint`, `GET /v1/beds/capabilities` |
 
 Path semantics: clients address files under the virtual prefix `/workspace`;
 hostel rebases that onto the bed's workspace directory. Relative paths are
@@ -97,7 +97,14 @@ Chromium/Jupyter integrations come later.
 ## Configuration
 
 Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
-`--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds`.
+`--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` / `--store` /
+`--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval`.
+
+Persistence: with `--store s3` each bed's workspace is snapshotted to
+`s3://<bucket>/<prefix>/<bedID>.tar.gz` (any S3-compatible endpoint) — restored
+when the bed is created again, persisted on delete / idle reap / explicit
+checkpoint, plus an optional `--persist-interval` safety net. A bed's durable
+identity is the snapshot; the local dir is just its working copy.
 
 Capacity: `--max-beds N` caps concurrent beds (0 = unlimited; the default bed
 is neither refused nor counted). A full instance answers new-bed requests with

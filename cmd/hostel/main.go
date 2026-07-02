@@ -31,6 +31,7 @@ import (
 	"github.com/qiankunli/hostel/internal/config"
 	"github.com/qiankunli/hostel/internal/isolation"
 	"github.com/qiankunli/hostel/internal/service"
+	"github.com/qiankunli/hostel/internal/store"
 	"github.com/qiankunli/hostel/internal/web"
 )
 
@@ -46,7 +47,19 @@ func main() {
 	// exist so Chromium/Jupyter drop in later without touching bed lifecycle.
 	services := service.NewRegistry()
 
-	mgr, err := bed.NewManager(cfg.WorkspaceRoot, cfg.DefaultBed, cfg.ShellPath, iso, services, cfg.MaxBeds)
+	// Fail fast on a misconfigured store: booting with silent noop while the
+	// operator believes snapshots are on would be quiet data loss.
+	st, err := store.New(context.Background(), store.Config{
+		Backend:  cfg.StoreBackend,
+		Bucket:   cfg.S3Bucket,
+		Prefix:   cfg.S3Prefix,
+		Endpoint: cfg.S3Endpoint,
+	})
+	if err != nil {
+		log.Fatalf("hostel: init store: %v", err)
+	}
+
+	mgr, err := bed.NewManager(cfg.WorkspaceRoot, cfg.DefaultBed, cfg.ShellPath, iso, services, cfg.MaxBeds, st)
 	if err != nil {
 		log.Fatalf("hostel: init bed manager: %v", err)
 	}
@@ -66,6 +79,24 @@ func main() {
 				case <-t.C:
 					if reaped := mgr.CollectIdle(cfg.BedIdleTimeout); len(reaped) > 0 {
 						log.Printf("hostel: reaped idle beds: %v", reaped)
+					}
+				}
+			}
+		}()
+	}
+
+	// Periodic snapshot safety net.
+	if cfg.PersistInterval > 0 {
+		go func() {
+			t := time.NewTicker(cfg.PersistInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if done := mgr.PersistDirty(ctx); len(done) > 0 {
+						log.Printf("hostel: persisted beds: %v", done)
 					}
 				}
 			}

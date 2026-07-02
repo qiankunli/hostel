@@ -31,7 +31,7 @@ import (
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()
-	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0)
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -248,7 +248,7 @@ var _ = http.StatusOK
 
 func TestMaxBedsBackpressure(t *testing.T) {
 	root := t.TempDir()
-	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 1)
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 1, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -280,5 +280,35 @@ func TestMaxBedsBackpressure(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &h)
 	if h["max_beds"] != float64(1) {
 		t.Fatalf("healthz max_beds = %v, want 1", h["max_beds"])
+	}
+}
+
+func TestCheckpointEndpointAndPersistenceReporting(t *testing.T) {
+	root := t.TempDir()
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	s := NewServer(mgr)
+
+	// Checkpoint an existing bed (noop backend → trivially succeeds).
+	rec := do(t, s, "POST", "/v1/beds", strings.NewReader(`{"id":"cp"}`), map[string]string{"Content-Type": "application/json"})
+	if rec.Code != 200 {
+		t.Fatalf("create = %d", rec.Code)
+	}
+	rec = do(t, s, "POST", "/v1/beds/cp/checkpoint", nil, nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"persistence":"noop"`) {
+		t.Fatalf("checkpoint = %d %s", rec.Code, rec.Body.String())
+	}
+	// Unknown bed → runtime error, not a crash.
+	rec = do(t, s, "POST", "/v1/beds/ghost/checkpoint", nil, nil)
+	if rec.Code != 500 {
+		t.Fatalf("checkpoint unknown bed = %d", rec.Code)
+	}
+
+	// healthz reports the backend.
+	rec = do(t, s, "GET", "/healthz", nil, nil)
+	if !strings.Contains(rec.Body.String(), `"persistence":"noop"`) {
+		t.Fatalf("healthz missing persistence: %s", rec.Body.String())
 	}
 }

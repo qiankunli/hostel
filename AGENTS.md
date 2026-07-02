@@ -20,6 +20,7 @@ internal/
 │   ├── shell.go       常驻 bash：单 reader goroutine→lines chan，Run 用 marker 分帧、单消费（状态跨 run 保持）
 │   └── command.go     一次性命令 registry：前台/后台、status、logs（cursor 增量、环形缓冲）
 ├── fsops/             bed-workspace-rooted 文件操作；Resolve 做路径 confine + /workspace 虚拟前缀 rebase
+├── store/             workspace 持久化：Store 接口 + noop/s3；tar 打包（zip-slip 防护）；见 docs/persistence.md
 ├── service/           ManagedService 接口 + Registry（v1 空；bed 删除/idle 调 ReleaseAll）
 └── web/               gin 薄适配层：server(路由+bedOf 解析) / errors / sse / files / command / beds
 ```
