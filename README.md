@@ -161,7 +161,9 @@ In-container defaults (all overridable via `HOSTEL_*`): `--isolation bwrap`,
 /usr/bin/chromium`. `tini` is PID 1 (reaps shell/chromium children); the
 `HEALTHCHECK` calls `hostel --health` (self-GETs `/healthz`, no curl needed).
 Whether bwrap actually isolates depends on the pod granting user namespaces /
-`CAP_SYS_ADMIN`; without them hostel logs the degrade and runs as `direct`.
+`CAP_SYS_ADMIN`; without them hostel logs the degrade and runs as `direct`. The
+image runs as root by default (bwrap mount setup + chromium `--no-sandbox`);
+harden with a dropped-capability `securityContext` per deployment.
 
 ## License & acknowledgements
 

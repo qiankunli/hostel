@@ -21,7 +21,7 @@ ARG TARGETOS
 ARG TARGETARCH
 
 # --- build stage: static, pure-Go hostel binary --------------------------
-FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS builder
 ARG TARGETOS
 ARG TARGETARCH
 # GOPROXY overridable for networks without proxy.golang.org (e.g. corp mirrors).
@@ -60,6 +60,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/hostel /usr/local/bin/hostel
+
+# Runs as root by default (like execd): bwrap must mkdir the /workspace mount
+# point on the read-only root and needs user namespaces, and chromium runs with
+# --no-sandbox — all awkward as non-root. Harden per deployment by running with
+# a dropped-capability securityContext, or build a non-root variant once your
+# pod grants bwrap the specific caps it needs.
 
 # Sensible in-container defaults; every one is overridable via HOSTEL_* env.
 ENV HOSTEL_WORKSPACE_ROOT=/workspace \

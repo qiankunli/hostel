@@ -25,7 +25,12 @@ import (
 // Config is the hostel runtime configuration. hostel is a generic sandbox
 // data-plane manager: it can run standalone on a laptop/VM, but is primarily
 // meant to run inside a pod, serving one or many beds (isolation units).
+// DefaultAddr is the default HTTP listen address.
+const DefaultAddr = ":8872"
+
 type Config struct {
+	ShowVersion bool
+	HealthCheck bool
 	// Addr is the HTTP listen address.
 	Addr string
 	// WorkspaceRoot is the parent dir under which each bed gets its workspace
@@ -68,7 +73,11 @@ type Config struct {
 func Load(args []string) *Config {
 	fs := flag.NewFlagSet("hostel", flag.ContinueOnError)
 	c := &Config{}
-	fs.StringVar(&c.Addr, "addr", envStr("HOSTEL_ADDR", ":8872"), "HTTP listen address")
+	fs.StringVar(&c.Addr, "addr", envStr("HOSTEL_ADDR", DefaultAddr), "HTTP listen address")
+	// Preflight flags handled by main (used by the image HEALTHCHECK); real
+	// flags so addr resolution stays identical to the running server.
+	fs.BoolVar(&c.ShowVersion, "version", false, "print version and exit")
+	fs.BoolVar(&c.HealthCheck, "health", false, "GET local /healthz and exit (0=ok)")
 	fs.StringVar(&c.WorkspaceRoot, "workspace-root", envStr("HOSTEL_WORKSPACE_ROOT", "/workspace"), "parent dir for per-bed workspaces")
 	fs.StringVar(&c.IsolationMode, "isolation", envStr("HOSTEL_ISOLATION", "direct"), "isolation mode: direct | bwrap")
 	fs.StringVar(&c.DefaultBed, "default-bed", envStr("HOSTEL_DEFAULT_BED", "default"), "bed id used when a request omits one")
