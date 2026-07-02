@@ -1,3 +1,4 @@
 /bin/
 /.workspace/
 *.out
+/.devloop/
