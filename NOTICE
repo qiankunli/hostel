@@ -1,0 +1,16 @@
+hostel
+Copyright 2026 Li Qiankun.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+hostel is based on / derived from OpenSandbox execd
+(https://github.com/alibaba/opensandbox), also licensed under the Apache
+License, Version 2.0. It started as a reimplementation of execd's OSEP-0013
+isolated-execution model — bubblewrap namespace/overlay confinement, a
+per-session upper-directory manager, a marker-framed long-running shell,
+filesystem path confinement, and the files / directories / command / session
+HTTP API surface — and is expected to diverge over time.
+
+Per Apache-2.0 §4, any file that incorporates OpenSandbox source verbatim
+retains the Apache-2.0 header together with OpenSandbox's copyright and
+attribution notices.
