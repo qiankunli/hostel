@@ -11,7 +11,8 @@
 ## 代码地图与核心模块
 
 ```
-cmd/hostel/main.go     组装：config→isolation→service registry→bed manager→gin server；idle GC；优雅关停
+build/Dockerfile       多阶段镜像：静态 hostel + debian-slim（内置可选 bwrap + chromium）；tini PID1；hostel --health 做 HEALTHCHECK
+cmd/hostel/main.go     组装：config→isolation→amenity registry→store→bed manager→gin server；idle GC/持久兜底；--version/--health 前置子命令；优雅关停
 internal/
 ├── config/            flags + HOSTEL_* env
 ├── isolation/         Isolator 接口（Wrap 一个 exec.Cmd 到 workspace）；direct(全平台) + bwrap(linux build-tag)

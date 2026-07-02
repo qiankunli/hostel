@@ -1,8 +1,10 @@
-.PHONY: help build test vet fmt lint tidy run run-bwrap linux smoke clean
+.PHONY: help build test vet fmt lint tidy run run-bwrap linux smoke image image-lean clean
 
 BIN      := bin/hostel
 ADDR     := :44772
 WS_ROOT  := ./.workspace
+IMAGE    := hostel:dev
+VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -49,6 +51,12 @@ smoke: build ## Boot on a scratch port and curl the core endpoints end to end
 	curl -sf -o /dev/null -w '%{http_code}' 'localhost:44799/files/download?path=/workspace/s.txt' \
 	  -H 'X-Hostel-Bed: other' | grep -q 404; \
 	echo "smoke OK"
+
+image: ## Build the container image (bwrap + chromium)
+	docker build -f build/Dockerfile -t $(IMAGE) --build-arg VERSION=$(VERSION) .
+
+image-lean: ## Build the lean image (bwrap only, no browser amenity)
+	docker build -f build/Dockerfile -t $(IMAGE)-lean --build-arg VERSION=$(VERSION) --build-arg WITH_CHROMIUM=false .
 
 clean: ## Remove build artifacts and the dev workspace
 	rm -rf bin .workspace

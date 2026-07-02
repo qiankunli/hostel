@@ -80,6 +80,18 @@ Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isola
 
 容量：`--max-beds N` 限制并发 bed 数（0 = 不限；default bed 不被拒绝也不计数）。实例满时新建 bed 返回 `429 BED_LIMIT_EXCEEDED`——这是给调度方的背压信号（换个实例放置）；当前/最大数量由 `/healthz` 与 capabilities 上报。
 
+## 容器镜像
+
+`build/Dockerfile` 多阶段构建:静态纯 Go 二进制 + `debian-slim` 运行时,内置两个可选设施——**bubblewrap**(`--isolation bwrap`)与 **chromium**(浏览器 amenity)。两者都是可选的:hostel 启动时 probe、探不到就诚实降级,受限 pod(无 namespace)照常服务。
+
+```bash
+make image          # 完整镜像(bwrap + chromium)
+make image-lean     # 仅 bwrap(~150MB);浏览器走 --chromium-cdp-url 或缺席
+docker run -p 44772:44772 hostel:dev
+```
+
+容器内默认值(均可用 `HOSTEL_*` 覆盖):`--isolation bwrap`、`--workspace-root /workspace`(声明为 volume)、`--chromium-path /usr/bin/chromium`。`tini` 作 PID 1(回收 shell/chromium 子进程);`HEALTHCHECK` 用 `hostel --health`(自打 `/healthz`,免 curl)。bwrap 是否真隔离取决于 pod 是否给了 user namespace / `CAP_SYS_ADMIN`,没有则日志记录降级、以 `direct` 运行。
+
 ## 许可与致谢
 
 hostel 采用 **Apache-2.0**（见 [`LICENSE`](LICENSE)），与其来源保持一致。hostel **基于 / 派生自 OpenSandbox execd**（https://github.com/alibaba/opensandbox ，Apache-2.0）：起步是对其隔离执行模型的重实现，后续会逐步演化分化。归属细节见 [`NOTICE`](NOTICE)。
