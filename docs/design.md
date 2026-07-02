@@ -114,4 +114,4 @@ bed 的三个正交维度各有专门文档，本文只留一句定位：
 
 ## 十一、Roadmap（v1.1+）
 
-数据隔离补强（`data-isolation.md`，先行）· S3 Store 持久化（`persistence.md`）· per-bed cgroup（`resource-isolation.md`，推后）· bwrap 安全纵深（seccomp memfd / 真 setuid）· overlay CoW（临时层）· PTY WS · Jupyter amenity 实例 · 交互动作全集 · 上层调度系统对接 · 产品化外壳（API 版本化、独立发布）。
+数据隔离补强（`data-isolation.md`，先行）· S3 Store 持久化（`persistence.md`）· per-bed cgroup（`resource-isolation.md`，推后）· landlock isolator（无 userns 环境的中间隔离档，见 data-isolation.md）· bwrap 安全纵深（seccomp memfd / 真 setuid）· overlay CoW（临时层）· PTY WS · Jupyter amenity 实例 · 交互动作全集 · 上层调度系统对接 · 产品化外壳（API 版本化、独立发布）。

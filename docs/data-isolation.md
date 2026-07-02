@@ -84,3 +84,35 @@ bind 目标从"宿主原位路径"改为 bed 内固定的 `/workspace`：
 ## 实现状态
 
 已实现（`internal/isolation/`）：boot 时 bwrap probe（binary + **全形态 smoke**——用真实 argv 起 `true`，namespace/遮蔽/`/workspace` bind 全过一遍；宿主挂载点缺失等问题在 boot 即暴露并诚实降 direct，不再误报 `workspace_mount`）、遮蔽 argv、`/workspace` 规范挂载、cwd 模式感知映射（`web` 层 `resolveCwd`）、env 剥除、capabilities/healthz 报 `workspace_mount`。mac argv 单测绿；**Linux 真机双 bed 验证已通过**（devbox，bwrap 0.8.0 / kernel 5.15：兄弟遮蔽、规范挂载、敏感路径+env 剥除、direct 负面对照全 PASS）。真机验证同时暴露两个 bug 均已修复：宿主缺 `/workspace` 挂载点（probe 改全形态 + boot 时确保挂载点）；shell 死亡 + 未断开客户端导致全 daemon 死锁（Shell 锁职责拆分，见 `internal/bed/shell.go` LOCKING 注释）。
+
+## 隔离能力阶梯：无 userns / 无 CAP_SYS_ADMIN 时怎么办（调研）
+
+bwrap 的 mount namespace 遮蔽依赖 **unprivileged userns** 或 `CAP_SYS_ADMIN`。很多现代内核默认 `kernel.unprivileged_userns_clone=1`，此时 bwrap **不需要 root 也能真隔离**（devbox 特权容器已验，普通容器开了 userns 同样成立）——所以"没有 CAP_SYS_ADMIN"不等于"没有隔离"，先看内核这个开关。但确实存在两者都关的环境。按"环境给什么"降级，隔离能力分四档：
+
+| 档 | 需要的能力 | 隔离强度 | 机制 |
+|---|---|---|---|
+| **bwrap** | userns 或 `CAP_SYS_ADMIN` | 强：兄弟 bed **不可见**（tmpfs 遮蔽）+ RO 根 + `/workspace` 规范挂载 + env 剥除 | mount ns |
+| **landlock**（建议新增） | **无（非特权）**，内核 ≥5.13 | 中强：兄弟 bed **可见但不可访问**（open 得 EACCES），内核强制 | Landlock LSM |
+| **per-bed uid** | `CAP_SETUID`（比 SYS_ADMIN 轻） | 中：跨 uid + 0700 权限位挡读写，但目录结构可见、root 可逃 | setuid/setgid |
+| **direct** | 无 | 无强制隔离，仅组织性分隔（见 §5） | chdir only |
+
+### landlock 是"无 userns"这个洞的最佳补位
+
+**调研结论**（参考本地 clone `../go-landlock`，及同类现成品 `../greywall`——container-free、deny-by-default、面向 AI coding agent 的 landlock 沙箱）：
+
+- **官方库 `github.com/landlock-lsm/go-landlock`**：核心 API 一行——
+  `landlock.V9.BestEffort().RestrictPaths(landlock.RODirs("/usr","/bin",...), landlock.RWDirs(bedDataDir))`。调用后**本进程（含 exec 出的子进程）只能访问列出的路径**。
+- **无需任何 capability**，Landlock 自 Linux 5.13 起（FS 访问控制是 ABI v1，最广部署的部分；网络限制要 ABI v4 / 内核 6.7，暂不需要）。`BestEffort()` 在老内核/无 landlock 时**优雅降级**——与 hostel"诚实降级"哲学一致。
+- **集成模式已明确**（greywall 同款、与 bwrap 外部前缀同构）：landlock 只能限制**调用它的进程**，不能限制 hostel 自己（hostel 要管所有 bed、需全 FS）。做法是 **hostel 自 re-exec**：新增隐藏子命令 `hostel __confine <bedDataDir> -- <shell>`，子进程先 `RestrictPaths` 再 `exec` bash。这**正好塞进现有 `Isolator` 接口**——landlock isolator 的 `Wrap` 把 `<hostelBin> __confine <bedDir> --` 前缀进 `cmd.Args`，与 bwrap 前缀 argv 一模一样。
+- **系统路径放行清单**（shell 要能跑，参考 greywall）：RO = `/usr /lib /lib64 /bin /sbin /etc /proc /sys /run /opt`；RW = 该 bed 的 `data/`（+ `/dev/null` 等）。
+
+### landlock 相对 bwrap 的诚实差距
+
+- **"不可访问" ≠ "不存在"**：landlock 让兄弟 bed 目录 open EACCES，但 `readdir` 父目录仍能看到它们的**名字**（存在性泄漏）；bwrap 的 tmpfs 让它们从视图消失。对数据机密性两者都挡住读，对"有没有 bed X"这类元数据 landlock 会漏。
+- **无 `/workspace` 规范挂载**：路径仍是真实宿主路径，file API 与 shell 两套语义的统一（bwrap 的附带收益）在 landlock 下不自动获得。
+- **仅 FS（+ 高版本部分 net/ipc）**：不带 pid/uts/ipc/net namespace，进程表、主机名等不隔离——但那些是"安全纵深"，不是数据隔离。
+- **必须在把控制权交给不可信代码前 apply**，且不能限制已打开的 fd。
+
+### 建议
+
+新增 **`--isolation landlock`** 作为中间档，`New(mode, root)` 路由：bwrap（探测到 userns）> landlock（探测到内核 ≥5.13）> direct。boot 时同样 probe（起一个 `hostel __confine` 空跑），capabilities 报实际生效档位（如 `isolator: landlock`）。**实现待定**：本节为调研记录，clone 已落地 `../go-landlock`、`../greywall` 供参考。
