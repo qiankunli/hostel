@@ -31,7 +31,7 @@ import (
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()
-	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil)
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -245,3 +245,40 @@ func TestCapabilities(t *testing.T) {
 func jsonStr(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 var _ = http.StatusOK
+
+func TestMaxBedsBackpressure(t *testing.T) {
+	root := t.TempDir()
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	s := NewServer(mgr)
+
+	// First bed fills the only slot.
+	rec := do(t, s, "POST", "/v1/beds", strings.NewReader(`{"id":"one"}`), map[string]string{"Content-Type": "application/json"})
+	if rec.Code != 200 {
+		t.Fatalf("create one = %d %s", rec.Code, rec.Body.String())
+	}
+	// Second bed → 429 BED_LIMIT_EXCEEDED, whether via management API...
+	rec = do(t, s, "POST", "/v1/beds", strings.NewReader(`{"id":"two"}`), map[string]string{"Content-Type": "application/json"})
+	if rec.Code != 429 || !strings.Contains(rec.Body.String(), "BED_LIMIT_EXCEEDED") {
+		t.Fatalf("create two = %d %s (want 429 BED_LIMIT_EXCEEDED)", rec.Code, rec.Body.String())
+	}
+	// ...or via implicit creation on any endpoint.
+	rec = do(t, s, "GET", "/files/info?path=/workspace", nil, map[string]string{BedHeader: "three"})
+	if rec.Code != 429 {
+		t.Fatalf("implicit create three = %d (want 429)", rec.Code)
+	}
+	// Default bed still works on a full instance.
+	rec = do(t, s, "GET", "/files/info?path=/workspace", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("default bed on full instance = %d %s", rec.Code, rec.Body.String())
+	}
+	// Capacity is reported for scheduler placement.
+	rec = do(t, s, "GET", "/healthz", nil, nil)
+	var h map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &h)
+	if h["max_beds"] != float64(1) {
+		t.Fatalf("healthz max_beds = %v, want 1", h["max_beds"])
+	}
+}

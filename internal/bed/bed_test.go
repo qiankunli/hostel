@@ -16,6 +16,7 @@ package bed
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ import (
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	root := t.TempDir()
-	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil)
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -144,5 +145,38 @@ func TestCollectIdleSkipsDefault(t *testing.T) {
 	}
 	if _, ok := m.Get("default"); !ok {
 		t.Fatal("default bed must never be reaped")
+	}
+}
+
+func TestMaxBedsCap(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 2)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if _, err := m.Resolve("a"); err != nil {
+		t.Fatalf("bed a: %v", err)
+	}
+	if _, err := m.Resolve("b"); err != nil {
+		t.Fatalf("bed b: %v", err)
+	}
+	// Cap hit: a third bed is refused with the sentinel.
+	if _, err := m.Resolve("c"); !errors.Is(err, ErrBedLimit) {
+		t.Fatalf("bed c: want ErrBedLimit, got %v", err)
+	}
+	// Existing beds still resolve.
+	if _, err := m.Resolve("a"); err != nil {
+		t.Fatalf("existing bed a after cap: %v", err)
+	}
+	// The default bed is exempt — the single-tenant path never breaks.
+	if _, err := m.Resolve(""); err != nil {
+		t.Fatalf("default bed exempt: %v", err)
+	}
+	// Deleting frees a slot.
+	if err := m.Delete("a"); err != nil {
+		t.Fatalf("delete a: %v", err)
+	}
+	if _, err := m.Resolve("c"); err != nil {
+		t.Fatalf("bed c after free slot: %v", err)
 	}
 }

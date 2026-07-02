@@ -61,7 +61,9 @@ curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: con
 
 ## 配置
 
-Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isolation` / `--default-bed` / `--shell` / `--bed-idle-timeout`。
+Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isolation` / `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds`。
+
+容量：`--max-beds N` 限制并发 bed 数（0 = 不限；default bed 不被拒绝也不计数）。实例满时新建 bed 返回 `429 BED_LIMIT_EXCEEDED`——这是给调度方的背压信号（换个实例放置）；当前/最大数量由 `/healthz` 与 capabilities 上报。
 
 ## 许可与致谢
 

@@ -97,7 +97,13 @@ Chromium/Jupyter integrations come later.
 ## Configuration
 
 Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
-`--default-bed` / `--shell` / `--bed-idle-timeout`.
+`--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds`.
+
+Capacity: `--max-beds N` caps concurrent beds (0 = unlimited; the default bed
+is neither refused nor counted). A full instance answers new-bed requests with
+`429 BED_LIMIT_EXCEEDED` — the backpressure signal for a scheduler to place the
+sandbox elsewhere; current and max counts are reported by `/healthz` and the
+capabilities endpoint.
 
 ## License & acknowledgements
 
