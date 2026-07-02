@@ -27,8 +27,9 @@ import (
 
 // packDir writes dir as a tar.gz stream to w. Entries are relative to dir;
 // regular files, directories and symlinks are kept (sockets/devices skipped —
-// they're runtime state, not workspace data).
-func packDir(dir string, w io.Writer) error {
+// they're runtime state, not workspace data). Entries for which skip returns
+// true are omitted (nil = keep everything).
+func packDir(dir string, w io.Writer, skip func(rel string) bool) error {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
 
@@ -41,6 +42,12 @@ func packDir(dir string, w io.Writer) error {
 			return err
 		}
 		if rel == "." {
+			return nil
+		}
+		if skip != nil && skip(rel) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		info, err := d.Info()

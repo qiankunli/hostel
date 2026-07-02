@@ -39,7 +39,7 @@ func TestPackUnpackRoundTrip(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := packDir(src, &buf); err != nil {
+	if err := packDir(src, &buf, nil); err != nil {
 		t.Fatalf("pack: %v", err)
 	}
 

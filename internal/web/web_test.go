@@ -312,3 +312,26 @@ func TestCheckpointEndpointAndPersistenceReporting(t *testing.T) {
 		t.Fatalf("healthz missing persistence: %s", rec.Body.String())
 	}
 }
+
+func TestDeleteEvictVsPurge(t *testing.T) {
+	s := newTestServer(t)
+	// Create, then default DELETE = evict (noop store: no snapshot, but 200).
+	rec := do(t, s, "POST", "/v1/beds", strings.NewReader(`{"id":"lifecycle"}`), map[string]string{"Content-Type": "application/json"})
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"active"`) {
+		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s, "DELETE", "/v1/beds/lifecycle", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("evict = %d %s", rec.Code, rec.Body.String())
+	}
+	// Purge an absent bed is idempotent (snapshot delete of missing key is OK).
+	rec = do(t, s, "DELETE", "/v1/beds/lifecycle?purge=true", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("purge = %d %s", rec.Code, rec.Body.String())
+	}
+	// Default bed refuses purge.
+	rec = do(t, s, "DELETE", "/v1/beds/default?purge=true", nil, nil)
+	if rec.Code != 500 {
+		t.Fatalf("purge default = %d (want refusal)", rec.Code)
+	}
+}

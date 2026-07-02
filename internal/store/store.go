@@ -37,9 +37,14 @@ type Store interface {
 	// workspace dir). Called on bed create/resume, before serving requests.
 	Restore(ctx context.Context, bedID, dir string) error
 	// Persist snapshots dir as the bed's durable copy, replacing any previous
-	// snapshot. Called on idle GC, delete, explicit checkpoint, and the
-	// periodic safety net.
+	// snapshot. Called on evict, explicit checkpoint, and the periodic safety
+	// net. dir is the bed dir (portable meta + data/); top-level *.local
+	// files are host-private and excluded.
 	Persist(ctx context.Context, bedID, dir string) error
+	// Delete removes the bed's snapshot — the purge path: after this the bed
+	// identity no longer exists anywhere. Deleting a missing snapshot is not
+	// an error.
+	Delete(ctx context.Context, bedID string) error
 }
 
 // Config selects and parameterizes the backend (flags/env in config package).
@@ -75,3 +80,4 @@ func (Noop) Name() string                                  { return "noop" }
 func (Noop) Exists(context.Context, string) (bool, error)  { return false, nil }
 func (Noop) Restore(context.Context, string, string) error { return nil }
 func (Noop) Persist(context.Context, string, string) error { return nil }
+func (Noop) Delete(context.Context, string) error          { return nil }

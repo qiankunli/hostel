@@ -36,14 +36,31 @@ import (
 
 // Bed is one isolation unit.
 type Bed struct {
-	ID        string
-	Workspace string // host dir backing the bed's virtual /workspace
-	CreatedAt time.Time
+	ID string
+	// Dir is the bed's root: meta.json + data/ (docs/persistence.md §4).
+	// Snapshots pack this dir; bed code never sees it.
+	Dir string
+	// Workspace is Dir/data — the only part bound into the sandbox and the
+	// only part bed code can touch.
+	Workspace string
+	CreatedAt time.Time // survives evict/resume via snapshot meta
 
 	mu          sync.Mutex
 	lastUsed    time.Time
 	persistedAt time.Time         // last successful snapshot (zero = never)
+	evicting    bool              // an evict's persist is in flight
 	shells      map[string]*Shell // stateful bash sessions (spec /session)
+}
+
+// State reports the lifecycle state for observability: "active" or "evicting".
+// DORMANT beds aren't in memory at all (their state is the snapshot itself).
+func (b *Bed) State() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.evicting {
+		return "evicting"
+	}
+	return "active"
 }
 
 func (b *Bed) touch() {
@@ -148,22 +165,44 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 			return nil, ErrBedLimit
 		}
 	}
-	ws := filepath.Join(m.root, id)
-	if err := os.MkdirAll(ws, 0o755); err != nil {
-		return nil, fmt.Errorf("bed: create workspace %s: %w", ws, err)
+	bedDir := filepath.Join(m.root, id)
+	dataDir := filepath.Join(bedDir, "data")
+	if err := os.MkdirAll(bedDir, 0o755); err != nil {
+		return nil, fmt.Errorf("bed: create bed dir %s: %w", bedDir, err)
 	}
-	// Resume-from-snapshot: if the bed has a durable copy, hydrate the fresh
-	// workspace BEFORE serving. A restore failure fails the resolve — silently
-	// starting empty when a snapshot exists would look like data loss.
+	// Resume-from-snapshot: if the bed has a durable copy, hydrate BEFORE
+	// serving (snapshot = portable meta + data). A restore failure fails the
+	// resolve — silently starting empty when a snapshot exists would look
+	// like data loss.
+	restored := false
 	if ok, err := m.store.Exists(context.Background(), id); err != nil {
 		return nil, fmt.Errorf("bed: check snapshot %s: %w", id, err)
 	} else if ok {
-		if err := m.store.Restore(context.Background(), id, ws); err != nil {
+		if err := m.store.Restore(context.Background(), id, bedDir); err != nil {
 			return nil, fmt.Errorf("bed: restore %s: %w", id, err)
 		}
+		restored = true
 	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return nil, fmt.Errorf("bed: create workspace %s: %w", dataDir, err)
+	}
+
 	now := time.Now()
-	b := &Bed{ID: id, Workspace: ws, CreatedAt: now, lastUsed: now, persistedAt: now, shells: make(map[string]*Shell)}
+	meta, ok := loadMeta(bedDir)
+	if !ok {
+		meta = bedMeta{Version: 1, BedID: id, CreatedAt: now}
+		if err := saveMeta(bedDir, meta); err != nil {
+			return nil, fmt.Errorf("bed: write meta %s: %w", id, err)
+		}
+	}
+	// Dirty-tracking baseline: a just-restored bed is in sync NOW; a dir that
+	// survived a process restart (default bed) trusts its on-disk timestamp,
+	// so the periodic safety net stays correct across restarts.
+	persistedAt := meta.LastPersistedAt
+	if restored || persistedAt.IsZero() {
+		persistedAt = now
+	}
+	b := &Bed{ID: id, Dir: bedDir, Workspace: dataDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, shells: make(map[string]*Shell)}
 	m.beds[id] = b
 	return b, nil
 }
@@ -190,13 +229,15 @@ func (m *Manager) List() []*Bed {
 	return out
 }
 
-// Delete tears a bed down: shells killed, service tenants released, workspace
-// persisted (release compute, keep identity — docs/persistence.md) and then
-// removed. A persist failure ABORTS the delete: destroying the only copy is
-// worse than leaving the bed alive for a retry. The default bed keeps its
-// workspace (only runtime state resets) so single-tenant callers can never
-// lose their data to a stray DELETE.
-func (m *Manager) Delete(id string) error {
+// Evict releases a bed's compute while keeping its identity (ACTIVE →
+// EVICTING → DORMANT, docs/persistence.md §4): persist, then tear down and
+// free the max-beds slot. Returns evicted=false without error when the
+// eviction was CANCELED because the bed saw new activity during the persist
+// window — serving beats reclaiming, and removing the workspace after a
+// mid-persist write would silently drop that write. A persist failure aborts
+// the evict (never destroy the only copy). The default bed keeps its
+// workspace (runtime state resets only).
+func (m *Manager) Evict(id string) (bool, error) {
 	if id == "" {
 		id = m.defaultBed
 	}
@@ -204,30 +245,102 @@ func (m *Manager) Delete(id string) error {
 	b, ok := m.beds[id]
 	m.mu.Unlock()
 	if !ok {
-		return nil
+		return false, nil // not ACTIVE; nothing to evict
 	}
-	// Snapshot before any destructive step (shells are about to die anyway,
-	// but the workspace must survive a persist failure).
-	if id != m.defaultBed {
-		if err := m.store.Persist(context.Background(), id, b.Workspace); err != nil {
-			return fmt.Errorf("bed: persist before delete %s: %w", id, err)
-		}
+
+	// Enter EVICTING: remember the activity watermark we snapshot against.
+	b.mu.Lock()
+	if b.evicting {
+		b.mu.Unlock()
+		return false, nil // another evict is already in flight
 	}
+	b.evicting = true
+	watermark := b.lastUsed
+	b.mu.Unlock()
+
+	if err := m.persistBed(context.Background(), b); err != nil {
+		b.mu.Lock()
+		b.evicting = false
+		b.mu.Unlock()
+		return false, fmt.Errorf("bed: persist before evict %s: %w", id, err)
+	}
+
+	// Atomic re-check: activity during the persist window cancels the evict.
+	// The snapshot we just took is still valid (it's simply not the final
+	// word), so nothing is wasted.
+	b.mu.Lock()
+	if b.lastUsed.After(watermark) {
+		b.evicting = false
+		b.mu.Unlock()
+		return false, nil
+	}
+	b.mu.Unlock()
+
 	m.mu.Lock()
 	delete(m.beds, id)
 	m.mu.Unlock()
+	m.teardown(b)
+	if id == m.defaultBed {
+		b.mu.Lock()
+		b.evicting = false
+		b.mu.Unlock()
+		return true, nil
+	}
+	return true, os.RemoveAll(b.Dir)
+}
+
+// Purge ends a bed's identity: tear down (no persist), remove the local dir,
+// and delete the snapshot. Explicitly destructive — the caller asked for the
+// data to be gone, so concurrent activity does not cancel it. The default bed
+// cannot be purged (it is the single-tenant fallback).
+func (m *Manager) Purge(id string) error {
+	if id == "" || id == m.defaultBed {
+		return fmt.Errorf("bed: refusing to purge the default bed")
+	}
+	m.mu.Lock()
+	b, ok := m.beds[id]
+	if ok {
+		delete(m.beds, id)
+	}
+	m.mu.Unlock()
+	if ok {
+		m.teardown(b)
+		if err := os.RemoveAll(b.Dir); err != nil {
+			return err
+		}
+	}
+	// DORMANT (or never-existed) beds still have a snapshot to remove.
+	return m.store.Delete(context.Background(), id)
+}
+
+// teardown kills a bed's runtime state: shells, one-shot commands, service
+// tenants. The workspace is untouched — callers decide its fate.
+func (m *Manager) teardown(b *Bed) {
 	b.mu.Lock()
 	for sid, sh := range b.shells {
 		sh.Close()
 		delete(b.shells, sid)
 	}
 	b.mu.Unlock()
-	m.commands.killBed(id)
-	m.services.ReleaseAll(id)
-	if id == m.defaultBed {
-		return nil
+	m.commands.killBed(b.ID)
+	m.services.ReleaseAll(b.ID)
+}
+
+// persistBed snapshots the bed dir (portable meta + data) and, on success,
+// advances both the in-memory and on-disk persistence watermarks.
+func (m *Manager) persistBed(ctx context.Context, b *Bed) error {
+	if err := m.store.Persist(ctx, b.ID, b.Dir); err != nil {
+		return err
 	}
-	return os.RemoveAll(b.Workspace)
+	now := time.Now()
+	b.mu.Lock()
+	b.persistedAt = now
+	b.mu.Unlock()
+	if meta, ok := loadMeta(b.Dir); ok {
+		meta.LastPersistedAt = now
+		_ = saveMeta(b.Dir, meta) // best-effort; in-memory watermark is set
+	}
+	return nil
 }
 
 // Checkpoint snapshots a bed's workspace now, without tearing it down.
@@ -238,13 +351,7 @@ func (m *Manager) Checkpoint(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("bed: unknown bed %q", id)
 	}
-	if err := m.store.Persist(ctx, b.ID, b.Workspace); err != nil {
-		return err
-	}
-	b.mu.Lock()
-	b.persistedAt = time.Now()
-	b.mu.Unlock()
-	return nil
+	return m.persistBed(ctx, b)
 }
 
 // PersistDirty is the periodic safety net: snapshot every bed touched since
@@ -259,12 +366,9 @@ func (m *Manager) PersistDirty(ctx context.Context) []string {
 		if !dirty {
 			continue
 		}
-		if err := m.store.Persist(ctx, b.ID, b.Workspace); err != nil {
+		if err := m.persistBed(ctx, b); err != nil {
 			continue
 		}
-		b.mu.Lock()
-		b.persistedAt = time.Now()
-		b.mu.Unlock()
 		done = append(done, b.ID)
 	}
 	return done
@@ -288,10 +392,13 @@ func (m *Manager) CollectIdle(timeout time.Duration) []string {
 		}
 	}
 	m.mu.Unlock()
+	var reaped []string
 	for _, id := range stale {
-		_ = m.Delete(id)
+		if ok, _ := m.Evict(id); ok {
+			reaped = append(reaped, id)
+		}
 	}
-	return stale
+	return reaped
 }
 
 // --- shell sessions (spec /session: stateful bash inside the bed) ---
