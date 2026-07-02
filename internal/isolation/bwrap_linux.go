@@ -33,38 +33,58 @@ type bwrap struct {
 	maskPaths []string // existing sensitive host paths to mask (computed once)
 }
 
-// newBwrap probes bubblewrap at boot: binary present AND a minimal namespace
-// actually starts (binary-present-but-broken — e.g. unprivileged userns
-// disabled — must not count as isolated). On failure it falls back to direct
-// so the daemon still boots and /healthz reports the truth.
-// Probe pattern borrowed from OpenSandbox execd.
+// newBwrap probes bubblewrap at boot: binary present AND the FULL mount shape
+// we will actually use starts (binary-present-but-broken — unprivileged userns
+// disabled, or no /workspace mount point on the RO host root — must not count
+// as isolated; a partial probe once let healthz report workspace_mount:true
+// while every exec failed). On failure it falls back to direct so the daemon
+// still boots and /healthz reports the truth.
+// Probe pattern borrowed from OpenSandbox execd, extended to the real argv.
 func newBwrap(workspaceRoot string) Isolator {
 	path, err := exec.LookPath("bwrap")
 	if err != nil {
 		log.Printf("isolation: bwrap not found, falling back to direct (no isolation)")
 		return direct{}
 	}
-	if err := bwrapSmoke(path); err != nil {
-		log.Printf("isolation: bwrap found but unusable (%v), falling back to direct", err)
-		return direct{}
+
+	// bwrap cannot mkdir the mount point inside the read-only root bind, so
+	// the canonical /workspace must exist on the HOST. Create it if we can
+	// (in a pod hostel usually runs as root); if we can't, the full-shape
+	// smoke below fails and we honestly degrade.
+	if err := os.MkdirAll(BwrapMountPoint, 0o755); err != nil {
+		log.Printf("isolation: cannot ensure mount point %s on host: %v", BwrapMountPoint, err)
 	}
+	// The workspace root may not exist yet at probe time (the bed manager
+	// creates it later); the smoke test masks it, so it must exist now.
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		log.Printf("isolation: cannot create workspace root %s: %v", workspaceRoot, err)
+	}
+
 	var masks []string
 	for _, p := range defaultMaskCandidates {
 		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
 			masks = append(masks, p)
 		}
 	}
+	if err := bwrapSmoke(path, workspaceRoot, masks); err != nil {
+		log.Printf("isolation: bwrap found but unusable (%v), falling back to direct", err)
+		return direct{}
+	}
 	return &bwrap{path: path, root: workspaceRoot, maskPaths: masks}
 }
 
-// bwrapSmoke verifies bwrap can create the namespaces we ask for.
-func bwrapSmoke(path string) error {
-	cmd := exec.Command(path,
-		"--unshare-pid", "--unshare-uts", "--unshare-ipc",
-		"--ro-bind", "/", "/",
-		"--proc", "/proc",
-		"--", "true",
-	)
+// bwrapSmoke runs `true` under the exact argv shape used for real commands —
+// namespaces, masking, and the /workspace bind all get exercised, so whatever
+// passes here works for beds too.
+func bwrapSmoke(path, workspaceRoot string, masks []string) error {
+	probeWs, err := os.MkdirTemp(workspaceRoot, ".probe-*")
+	if err != nil {
+		return fmt.Errorf("smoke test: temp workspace: %w", err)
+	}
+	defer os.RemoveAll(probeWs)
+
+	argv := buildBwrapArgs(workspaceRoot, probeWs, masks, nil)
+	cmd := exec.Command(path, append(argv, "true")...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("smoke test: %w (%s)", err, out)

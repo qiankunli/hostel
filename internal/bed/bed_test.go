@@ -288,3 +288,55 @@ func TestPersistDirty(t *testing.T) {
 		t.Fatalf("second PersistDirty = %v, want []", done)
 	}
 }
+
+// Regression for the devbox-found deadlock: a shell whose process dies while a
+// Run is waiting for output must error out (reader closes the lines channel),
+// and the manager/bed locks must stay usable from other goroutines throughout.
+// Before the runMu/mu split, this hung the entire daemon including /healthz.
+func TestDyingShellDoesNotDeadlock(t *testing.T) {
+	m := newTestManager(t)
+	b, _ := m.Resolve("default")
+	sh, err := m.ForegroundShell(b)
+	if err != nil {
+		t.Fatalf("ForegroundShell: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		// The shell kills itself: no marker line will ever arrive.
+		_, err := sh.Run(context.Background(), "kill -9 $$", nil)
+		done <- err
+	}()
+
+	// While that Run is in flight/dying, the full lock chain must stay live:
+	// Manager.Resolve (m.mu) → touch (b.mu) → ForegroundShell (b.mu + Dead()).
+	probe := make(chan struct{})
+	go func() {
+		_, _ = m.Resolve("default")
+		_, _ = m.ForegroundShell(b) // may restart the shell; must not block forever
+		close(probe)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run on self-killed shell should return an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DEADLOCK: Run never returned after shell death")
+	}
+	select {
+	case <-probe:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DEADLOCK: manager locks wedged by dying shell")
+	}
+
+	// And the bed recovers: a fresh foreground shell works.
+	sh2, err := m.ForegroundShell(b)
+	if err != nil {
+		t.Fatalf("ForegroundShell after death: %v", err)
+	}
+	if res, err := sh2.Run(context.Background(), "echo back", nil); err != nil || res.ExitCode != 0 {
+		t.Fatalf("recovered shell run: %v %+v", err, res)
+	}
+}

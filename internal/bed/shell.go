@@ -42,15 +42,24 @@ func validBedID(id string) error {
 // stdin and framed by a per-run marker so stateful shell context (cwd, env,
 // functions) persists across runs — matching "shell state survives across
 // exec" semantics. A single reader goroutine drains combined stdout/stderr into
-// lines; Run (serialized by mu) is the sole consumer, so output can't leak
+// lines; Run (serialized by runMu) is the sole consumer, so output can't leak
 // between runs.
+//
+// LOCKING (the original single-mutex design deadlocked a live daemon — see
+// the fix commit): runMu is held for a Run's whole duration and is touched by
+// NOBODY else; mu guards only the dead flag and is held for nanoseconds. The
+// reader goroutine needs mu (never runMu) to mark death before closing lines,
+// so a dying shell can always unblock the Run that is waiting on the channel.
+// Callers holding bed/manager locks may call Dead() safely for the same
+// reason. Never add code that holds mu while blocking.
 type Shell struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 	lines chan string // every output line; closed on EOF/exit
 
-	mu   sync.Mutex // serializes Run
-	dead bool
+	runMu sync.Mutex // serializes Run; held while waiting for output
+	mu    sync.Mutex // guards dead only; held briefly
+	dead  bool
 }
 
 // shellQuote single-quotes s for safe interpolation into a shell line.
@@ -134,9 +143,9 @@ type RunResult struct {
 // until the command completes, detected by a unique end-marker echoing $?.
 // ctx cancels the wait (the shell keeps running; caller may Close to abort).
 func (s *Shell) Run(ctx context.Context, command string, onLine func(string)) (*RunResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.dead {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.Dead() {
 		return nil, fmt.Errorf("shell: session is dead")
 	}
 
