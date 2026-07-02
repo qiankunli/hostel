@@ -149,7 +149,7 @@ func main() {
 func healthCheck() int {
 	addr := os.Getenv("HOSTEL_ADDR")
 	if addr == "" {
-		addr = ":44772"
+		addr = ":8872"
 	}
 	if addr[0] == ':' {
 		addr = "127.0.0.1" + addr

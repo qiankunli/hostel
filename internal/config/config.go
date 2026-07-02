@@ -68,7 +68,7 @@ type Config struct {
 func Load(args []string) *Config {
 	fs := flag.NewFlagSet("hostel", flag.ContinueOnError)
 	c := &Config{}
-	fs.StringVar(&c.Addr, "addr", envStr("HOSTEL_ADDR", ":44772"), "HTTP listen address")
+	fs.StringVar(&c.Addr, "addr", envStr("HOSTEL_ADDR", ":8872"), "HTTP listen address")
 	fs.StringVar(&c.WorkspaceRoot, "workspace-root", envStr("HOSTEL_WORKSPACE_ROOT", "/workspace"), "parent dir for per-bed workspaces")
 	fs.StringVar(&c.IsolationMode, "isolation", envStr("HOSTEL_ISOLATION", "direct"), "isolation mode: direct | bwrap")
 	fs.StringVar(&c.DefaultBed, "default-bed", envStr("HOSTEL_DEFAULT_BED", "default"), "bed id used when a request omits one")

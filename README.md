@@ -40,17 +40,17 @@ microVM or a dedicated VM/container).
 
 ```bash
 make build
-./bin/hostel --isolation direct --workspace-root ./.workspace --addr :44772
+./bin/hostel --isolation direct --workspace-root ./.workspace --addr :8872
 
-curl -s localhost:44772/ping                                   # pong
-curl -s localhost:44772/healthz | jq
+curl -s localhost:8872/ping                                   # pong
+curl -s localhost:8872/healthz | jq
 # foreground command (SSE stream)
-curl -sN -XPOST localhost:44772/command \
+curl -sN -XPOST localhost:8872/command \
   -H 'Content-Type: application/json' -d '{"command":"echo hi > /workspace/a.txt; cat /workspace/a.txt"}'
 # read the file back
-curl -s 'localhost:44772/files/download?path=/workspace/a.txt'
+curl -s 'localhost:8872/files/download?path=/workspace/a.txt'
 # target another bed (a separate isolation unit; cannot see the default bed's files)
-curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
+curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
 ```
 
 ## API (v1, OpenSandbox-compatible)
@@ -147,7 +147,7 @@ namespaces still serves.
 make image                     # full image (bwrap + chromium), current arch
 make image-lean                # bwrap only (~150MB); browser via --chromium-cdp-url or absent
 make image-multiarch IMAGE=repo/hostel:tag   # linux/amd64 + arm64, pushed to a registry
-docker run -p 44772:44772 hostel:dev
+docker run -p 8872:8872 hostel:dev
 ```
 
 The build is multi-arch (`linux/amd64`, `linux/arm64`): being pure Go, the

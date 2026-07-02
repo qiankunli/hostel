@@ -68,7 +68,7 @@ ENV HOSTEL_WORKSPACE_ROOT=/workspace \
 # Persist beds across container restarts when no object store is configured
 # (with --store s3 the workspace is just a disposable working copy).
 VOLUME ["/workspace"]
-EXPOSE 44772
+EXPOSE 8872
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
     CMD ["hostel", "--health"]

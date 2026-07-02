@@ -22,17 +22,17 @@ hostel 走更轻的路：把多个隔离的 **bed** 装进一个进程。bed 创
 
 ```bash
 make build
-./bin/hostel --isolation direct --workspace-root ./.workspace --addr :44772
+./bin/hostel --isolation direct --workspace-root ./.workspace --addr :8872
 
-curl -s localhost:44772/ping                                   # pong
-curl -s localhost:44772/healthz | jq
+curl -s localhost:8872/ping                                   # pong
+curl -s localhost:8872/healthz | jq
 # 前台命令（SSE 流）
-curl -sN -XPOST localhost:44772/command \
+curl -sN -XPOST localhost:8872/command \
   -H 'Content-Type: application/json' -d '{"command":"echo hi > /workspace/a.txt; cat /workspace/a.txt"}'
 # 文件读回
-curl -s 'localhost:44772/files/download?path=/workspace/a.txt'
+curl -s 'localhost:8872/files/download?path=/workspace/a.txt'
 # 指定 bed（另一个隔离单元，看不到 default 的文件）
-curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
+curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
 ```
 
 ## API（v1，OpenSandbox 兼容）
@@ -88,7 +88,7 @@ Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isola
 make image                     # 完整镜像(bwrap + chromium),当前架构
 make image-lean                # 仅 bwrap(~150MB);浏览器走 --chromium-cdp-url 或缺席
 make image-multiarch IMAGE=repo/hostel:tag   # linux/amd64 + arm64,推到镜像仓库
-docker run -p 44772:44772 hostel:dev
+docker run -p 8872:8872 hostel:dev
 ```
 
 镜像多架构(`linux/amd64`、`linux/arm64`):纯 Go,builder 原生交叉编译(不走 QEMU),只有 debian runtime 阶段按目标架构跑、让 apt 拉对应架构的 bwrap/chromium。`make image-multiarch` 需要 `docker buildx` 且直接 push(多平台镜像无法 load 进本地 docker)。
