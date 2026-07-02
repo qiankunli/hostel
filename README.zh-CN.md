@@ -51,7 +51,13 @@ curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv
 ## 隔离
 
 - `direct`（默认，全平台）：仅 chdir 到 workspace，无隔离——dev / 可信单租户；
-- `bwrap`（Linux）：mount/pid/uts/ipc namespace + RO 根；兄弟 bed 被 tmpfs 遮蔽（视图里不存在），自己的 workspace rw 挂载在 `/workspace`，宿主用户数据与平台挂载凭据被遮蔽，密钥形环境变量被剥除。启动时 probe；不可用则退化 direct 并如实上报。
+数据隔离按**青年旅社房型**分档，`--isolation dorm|room|suite|auto`（默认 auto=环境顶格），`effective=min(请求, env 上限)`，超上限诚实降级：
+
+- `dorm`（通铺）：仅 chdir，无强制隔离（=direct，全平台）；
+- `room`（单间，厕所公用）：landlock 内核强制——兄弟数据不可访问但可见、`/tmp`/系统路径共享，无需任何 capability（Linux ≥5.13）；
+- `suite`（套房，全私有）：bwrap mount ns——兄弟不可见 + 私有 `/tmp` + `/workspace` 规范挂载 + env 剥除（需 userns 或 CAP_SYS_ADMIN）。
+
+启动时 probe 环境上限，healthz/capabilities 报 `isolation.{level,mechanism,requested,effective,ceiling}`。详见 `docs/data-isolation.md`。
 
 更强的隔离（真 setuid、seccomp、每个 bed 的 CPU/内存限制（cgroup）、写时复制 overlay workspace、PTY over WebSocket）在路线图上。
 

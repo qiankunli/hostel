@@ -76,11 +76,21 @@ Probe the `workspace_mount` capability to tell the two apart.
 
 - `direct` (default, all platforms): only chdir into the workspace, no isolation
   — for dev / fully-trusted single-tenant use;
-- `bwrap` (Linux): mount/pid/uts/ipc namespaces + read-only root; sibling beds
-  are masked out of existence (tmpfs over the workspace root), the bed's own
-  workspace is mounted rw at `/workspace`, host user data and mounted secrets
-  are masked, and secret-looking env vars are stripped. Probed at boot; falls
-  back to direct (honestly reported) when unusable.
+Data isolation is graded by **hostel room type**: `--isolation
+dorm|room|suite|auto` (default `auto` = the environment ceiling). The effective
+level is `min(requested, ceiling)` — an over-ask degrades honestly, a lower ask
+is a deliberate downgrade.
+
+- `dorm` (bunk): chdir only, no enforced isolation (= direct, all platforms);
+- `room` (private room, shared toilet): Landlock LSM — a bed can't *access*
+  other beds' data (EACCES) but siblings stay visible and `/tmp` / system paths
+  are shared; **no capability required** (Linux ≥5.13);
+- `suite` (fully private): bwrap mount ns — siblings invisible + private `/tmp`
+  + canonical `/workspace` mount + env scrub (needs userns or CAP_SYS_ADMIN).
+
+The environment ceiling is probed at boot; healthz/capabilities report
+`isolation.{level,mechanism,requested,effective,ceiling}`. See
+`docs/data-isolation.md`.
 
 Stronger isolation (real setuid, seccomp, per-bed CPU/memory limits via cgroups,
 copy-on-write overlay workspaces, PTY over WebSocket) is on the roadmap.

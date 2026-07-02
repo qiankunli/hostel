@@ -24,6 +24,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -40,6 +41,12 @@ import (
 var version = "dev"
 
 func main() {
+	// Landlock confiner re-exec (the room mechanism): before anything else,
+	// since the argv is `hostel __confine <dataDir> -- <cmd>...`, not flags.
+	if len(os.Args) >= 2 && os.Args[1] == isolation.ConfineArg {
+		os.Exit(runConfine(os.Args[2:]))
+	}
+
 	cfg := config.Load(os.Args[1:])
 
 	// Preflight subcommands used by the image (no curl needed). Handled after
@@ -55,10 +62,9 @@ func main() {
 
 	log.Printf("hostel %s starting", version)
 
+	// New resolves the requested level against the environment ceiling and
+	// logs the outcome; the returned isolator is always usable.
 	iso := isolation.New(cfg.IsolationMode, cfg.WorkspaceRoot)
-	if !iso.Available() {
-		log.Printf("hostel: isolator %q unavailable on this host — commands will run with reduced/no isolation", iso.Name())
-	}
 
 	// Amenity manager: shared facilities light up per deployment. Chromium is
 	// registered when launch (binary) or attach (--chromium-cdp-url) is
@@ -143,6 +149,41 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// runConfine implements `hostel __confine <dataDir> -- <cmd> <args>...`: apply
+// the room (Landlock) restrictions to THIS process, then exec the real command
+// so it inherits them. Returns a process exit code (it only returns on error;
+// success replaces the process image).
+func runConfine(args []string) int {
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 1 || sep+1 >= len(args) {
+		fmt.Fprintln(os.Stderr, "hostel __confine: usage: __confine <dataDir> -- <cmd>...")
+		return 2
+	}
+	dataDir := args[0]
+	cmd := args[sep+1:]
+
+	if err := isolation.ApplyConfine(dataDir); err != nil {
+		fmt.Fprintf(os.Stderr, "hostel __confine: apply landlock: %v\n", err)
+		return 1
+	}
+	path, err := exec.LookPath(cmd[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hostel __confine: %s: %v\n", cmd[0], err)
+		return 127
+	}
+	if err := syscall.Exec(path, cmd, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "hostel __confine: exec %s: %v\n", path, err)
+		return 126
+	}
+	return 0 // unreachable
 }
 
 // healthCheck GETs the local /healthz for the image HEALTHCHECK — no external
