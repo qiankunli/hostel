@@ -109,6 +109,11 @@ func (s *Server) routes() {
 		v1.POST("/:bedId/browser/goto", s.browserGoto)
 		v1.POST("/:bedId/browser/screenshot", s.browserScreenshot)
 		v1.POST("/:bedId/browser/text", s.browserText)
+		v1.POST("/:bedId/browser/click", s.browserClick)
+		v1.POST("/:bedId/browser/type", s.browserType)
+		v1.POST("/:bedId/browser/press", s.browserPress)
+		v1.POST("/:bedId/browser/scroll", s.browserScroll)
+		v1.POST("/:bedId/browser/wait", s.browserWait)
 		v1.POST("/:bedId/browser/close", s.browserClose)
 	}
 }

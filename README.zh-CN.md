@@ -67,6 +67,7 @@ curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv
 POST /v1/beds/:id/browser/goto        {url}
 POST /v1/beds/:id/browser/screenshot  {path?}   # 存进 bed workspace
 POST /v1/beds/:id/browser/text
+POST /v1/beds/:id/browser/{click,type,press,scroll,wait}
 POST /v1/beds/:id/browser/close
 ```
 
