@@ -26,6 +26,7 @@ import (
 
 	"github.com/qiankunli/hostel/internal/bed"
 	"github.com/qiankunli/hostel/internal/fsops"
+	"github.com/qiankunli/hostel/internal/isolation"
 )
 
 // respondBedError maps bed-resolution failures: a full instance is 429
@@ -152,6 +153,21 @@ func (s *Server) healthz(c *gin.Context) {
 		"beds":            len(s.mgr.List()),
 		"max_beds":        s.mgr.MaxBeds(),
 		"persistence":     s.mgr.StoreName(),
+		"isolation":       isolationView(iso),
 		"default_bed":     s.mgr.DefaultBedID(),
 	})
+}
+
+// isolationView reports the data-isolation resolution: the effective level, the
+// mechanism realizing it, the requested wish, and the environment ceiling
+// (docs/data-isolation.md). Falls back gracefully if the isolator predates the
+// Report interface.
+func isolationView(iso isolation.Isolator) gin.H {
+	v := gin.H{"level": iso.Level().String(), "mechanism": iso.Name()}
+	if r, ok := iso.(isolation.Report); ok {
+		v["requested"] = r.Requested().String()
+		v["effective"] = r.Effective().String()
+		v["ceiling"] = r.Ceiling().String()
+	}
+	return v
 }

@@ -31,7 +31,7 @@ import (
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()
-	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -60,7 +60,8 @@ func TestPingAndHealthz(t *testing.T) {
 	}
 	var h map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &h)
-	if h["isolator"] != "direct" || h["ok"] != true {
+	iso, _ := h["isolation"].(map[string]any)
+	if h["ok"] != true || iso == nil || iso["level"] != "dorm" || iso["mechanism"] != "direct" {
 		t.Fatalf("/healthz body = %v", h)
 	}
 }
@@ -248,7 +249,7 @@ var _ = http.StatusOK
 
 func TestMaxBedsBackpressure(t *testing.T) {
 	root := t.TempDir()
-	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 1, nil)
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 1, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -285,7 +286,7 @@ func TestMaxBedsBackpressure(t *testing.T) {
 
 func TestCheckpointEndpointAndPersistenceReporting(t *testing.T) {
 	root := t.TempDir()
-	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

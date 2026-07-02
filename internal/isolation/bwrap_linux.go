@@ -43,8 +43,7 @@ type bwrap struct {
 func newBwrap(workspaceRoot string) Isolator {
 	path, err := exec.LookPath("bwrap")
 	if err != nil {
-		log.Printf("isolation: bwrap not found, falling back to direct (no isolation)")
-		return direct{}
+		return unavailable{name: "bwrap", lvl: Suite}
 	}
 
 	// bwrap cannot mkdir the mount point inside the read-only root bind, so
@@ -67,8 +66,8 @@ func newBwrap(workspaceRoot string) Isolator {
 		}
 	}
 	if err := bwrapSmoke(path, workspaceRoot, masks); err != nil {
-		log.Printf("isolation: bwrap found but unusable (%v), falling back to direct", err)
-		return direct{}
+		log.Printf("isolation: bwrap found but unusable (%v)", err)
+		return unavailable{name: "bwrap", lvl: Suite}
 	}
 	return &bwrap{path: path, root: workspaceRoot, maskPaths: masks}
 }
@@ -93,7 +92,8 @@ func bwrapSmoke(path, workspaceRoot string, masks []string) error {
 }
 
 func (b *bwrap) Name() string       { return "bwrap" }
-func (b *bwrap) Available() bool    { return true } // probed at construction
+func (b *bwrap) Level() Level       { return Suite }
+func (b *bwrap) Available() bool    { return true } // only constructed when probe passed
 func (b *bwrap) MountPoint() string { return BwrapMountPoint }
 
 func (b *bwrap) Wrap(cmd *exec.Cmd, ws Workspace) error {

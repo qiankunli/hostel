@@ -84,3 +84,72 @@ bind 目标从"宿主原位路径"改为 bed 内固定的 `/workspace`：
 ## 实现状态
 
 已实现（`internal/isolation/`）：boot 时 bwrap probe（binary + **全形态 smoke**——用真实 argv 起 `true`，namespace/遮蔽/`/workspace` bind 全过一遍；宿主挂载点缺失等问题在 boot 即暴露并诚实降 direct，不再误报 `workspace_mount`）、遮蔽 argv、`/workspace` 规范挂载、cwd 模式感知映射（`web` 层 `resolveCwd`）、env 剥除、capabilities/healthz 报 `workspace_mount`。mac argv 单测绿；**Linux 真机双 bed 验证已通过**（devbox，bwrap 0.8.0 / kernel 5.15：兄弟遮蔽、规范挂载、敏感路径+env 剥除、direct 负面对照全 PASS）。真机验证同时暴露两个 bug 均已修复：宿主缺 `/workspace` 挂载点（probe 改全形态 + boot 时确保挂载点）；shell 死亡 + 未断开客户端导致全 daemon 死锁（Shell 锁职责拆分，见 `internal/bed/shell.go` LOCKING 注释）。
+
+## 隔离分档模型：青年旅社房型（档 / 机制 / 上限 / 请求）
+
+**bed 与房型是正交的两件事**，别混：**bed = 客人占用的单元**（一个 sandbox：workspace + 常驻 shell + 会话状态），跨档不变、是稳定的基本单位；**房型（dorm/room/suite）= 这张床所在房间的隔私度**，是"床周围的墙"有多严，不是替代 bed 的另一个名词。一张 dorm 床 / 单间床 / 套房床都还是 bed，区别只在墙。对应关系：dorm = 多个 bed 同室无墙（共享进程、bed 间无隔离）；room = bed 独占单间（数据锁死、厕所公用）；suite = bed 独占套房（私有 mount 视图）。
+
+**威胁模型**：一个 bed 逃出自己的空间、去读写别的 bed 的数据 = **越狱 / 串门**（jailbreak / escape）。数据隔离就是按强弱分档地防串门。档是对外保证，实现机制是内部细节。四个正交概念：
+
+- **Level（档）** = 对外保证：一个 bed 能对兄弟 / 宿主数据做什么。配置与上报用它。
+- **Mechanism（机制）** = 实现：direct / bwrap / landlock / uid，hostel 按环境自己选，调用方不关心。
+- **Ceiling（上限）** = 环境（内核版本 + capability）决定本机**最高能到哪档**。
+- **Request（请求）** = 用户要的档，可以 ≤ 上限——**故意降档合法**（觉得顶格没必要）。
+
+解析规则：
+
+```
+effective = min(requested, ceiling)
+请求 > 上限 → 诚实降级 + 警告日志（不假装隔离）
+请求 < 上限 → 尊重（按需降档）
+```
+
+### 三档 = 三种房型
+
+档名借青年旅社房型，梯度即隔私度，配置零学习成本（真实订房就是 dorm / room / suite）：
+
+| Level | 房型 | 保证：bed 对兄弟 / 宿主数据 | 机制 | 环境门槛 |
+|---|---|---|---|---|
+| **`dorm`** | 上下铺 / 通铺 | **无私人空间**：床位名义是你的但无屏障，伸手够到隔壁铺（仅组织性分隔，见 §5） | direct（chdir only） | 无 |
+| **`room`** | 单间（可锁门，**厕所公用**） | 别人**进不了你的房间**（数据 open EACCES），但走廊看得见你的门牌（存在可见），且 `/tmp`、`/usr`、系统路径等**公共设施仍共享** | landlock（优先）/ per-bed uid | 内核 ≥5.13 / `CAP_SETUID` |
+| **`suite`** | 套房（**全私有**） | 别人**看不见你的单元** + 私有 mount 视图（自己的 `/tmp`）+ `/workspace` 规范挂载 + env 剥除 | bwrap（mount ns） | userns 或 `CAP_SYS_ADMIN` |
+
+房型隐喻的技术精度：
+- **room = 单间厕所公用**：landlock 锁死「你的数据」，但不给私有视图——host 的 `/tmp` / 系统路径 / 父目录（兄弟门牌）仍共享可见。锁的是房间，不是整层楼。
+- **suite = 套房全私有**：bwrap 给私有 mount 视图——自己的 `/tmp`（tmpfs）、`/workspace` 规范挂载、兄弟从视图消失。连厕所都是自己的。
+- `room` 一档两机制：landlock（内核 LSM，无 cap）与 per-bed uid（权限位，需 `CAP_SETUID`）保证相同（跨 bed 不可读写），优先 landlock。
+
+很多现代内核默认 `kernel.unprivileged_userns_clone=1`，此时 bwrap **无需 root 也能到 suite**（devbox 特权容器已验，普通容器开 userns 同样成立）——"没 CAP_SYS_ADMIN"不等于"住不了套房"，先看内核这个开关。
+
+### 配置与上报
+
+- `--isolation dorm | room | suite | auto`，**默认 `auto`**（顶格取 ceiling）。取值是**房型（档）**，不是机制名（`direct/bwrap` 旧值迁移，hostel 无真实用户、零成本）。
+- 机制不进配置词汇；真需要强制才加 `--isolation-mechanism`（少用）。
+- capabilities / healthz 报四元组：`requested / effective / ceiling / mechanism`，调用方一目了然。
+
+### room 档实现（landlock，调研结论）
+
+参考本地 clone `../go-landlock`（官方库）与 `../greywall`（同类现成品：container-free、deny-by-default、面向 AI coding agent 的 landlock 沙箱）：
+
+- **`github.com/landlock-lsm/go-landlock`**，核心 API 一行——
+  `landlock.V9.BestEffort().RestrictPaths(landlock.RODirs("/usr","/bin",...), landlock.RWDirs(bedDataDir))`。调用后**本进程（含 exec 出的子进程）只能访问列出的路径**。
+- **无需任何 capability**，Landlock 自 Linux 5.13 起（FS 访问控制是 ABI v1，最广部署那档；网络限制要 ABI v4 / 内核 6.7，暂不需要）。`BestEffort()` 老内核 / 无 landlock 时**优雅降级**——与 hostel 诚实降级哲学一致。
+- **集成模式已明确**（greywall 同款、与 bwrap 外部前缀同构）：landlock 只能限制**调用它的进程**，不能限制 hostel 自己（hostel 要管所有 bed、需全 FS）。做法是 **hostel 自 re-exec**：隐藏子命令 `hostel __confine <bedDataDir> -- <shell>`，子进程先 `RestrictPaths` 再 `exec` bash。这**正好塞进现有 `Isolator` 接口**——room 机制的 `Wrap` 把 `<hostelBin> __confine <bedDir> --` 前缀进 `cmd.Args`，和 bwrap 前缀 argv 一模一样。
+- **系统路径放行清单**（shell 要能跑，参考 greywall）：RO = `/usr /lib /lib64 /bin /sbin /etc /proc /sys /run /opt`；RW = 该 bed 的 `data/`（+ `/dev/null` 等）。
+
+### room 相对 suite 的诚实差距（就是"厕所公用"）
+
+- **"进不去" ≠ "看不见"**：room（landlock）让兄弟 bed 目录 open EACCES，但 `readdir` 父目录仍能看到名字（存在性泄漏）；suite（bwrap tmpfs）让它们从视图消失。数据机密性两者都挡读，"有没有 bed X"这类元数据 room 会漏。
+- **公共设施仍共享**：`/tmp`、系统路径是宿主共用的，无私有 mount 视图；`/workspace` 规范挂载（file API 与 shell 两套语义统一，suite 的附带收益）在 room 下不自动获得。
+- **仅 FS**（+ 高版本部分 net/ipc）：不带 pid/uts/ipc/net namespace——那些是安全纵深，不是数据隔离。
+- 必须在把控制权交给不可信代码**前** apply，且不能限制已打开的 fd。
+
+### 实现状态
+
+**三档全部实装**（`internal/isolation/`）：
+- 房型路由 `New(requested, root)`：`effective = 请求 ≤ 内最高可达档`；每个机制 boot 时探可用性，`unavailable` 标记保留 Level 以便算 ceiling；解析结果日志 + capabilities/healthz 报 `isolation.{level,mechanism,requested,effective,ceiling}` + `workspace_mount`。
+- **room = landlock**（`landlock_linux.go`）：探 `LandlockGetABIVersion()≥1`；机制 `Wrap` 前缀 `hostel __confine <bedData> --`，`main` 的 `__confine` 子命令 `landlock.V9.BestEffort().RestrictPaths(RODirs 系统路径, RWDirs bedData+/tmp+/dev)` 后 `syscall.Exec`——与 bwrap 外部前缀同构，参考 `../greywall`。
+- 解析规则纯逻辑单测（`resolve_test.go`，注入可用性矩阵，mac 可跑）；**landlock 真机隔离验证待 devbox**（landlock 仅 Linux ≥5.13）。
+- per-bed uid 机制仍未做（room 的第二实现，更后）。
+
+依赖：`github.com/landlock-lsm/go-landlock`（仅 linux 文件引用，非 linux 走 `landlock_other.go` 报 room unavailable）。

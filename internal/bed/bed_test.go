@@ -30,7 +30,7 @@ import (
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	root := t.TempDir()
-	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestCollectIdleSkipsDefault(t *testing.T) {
 
 func TestMaxBedsCap(t *testing.T) {
 	root := t.TempDir()
-	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 2, nil)
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 2, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -230,7 +230,7 @@ func (f *fakeStore) Delete(_ context.Context, id string) error {
 func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
 	root := t.TempDir()
 	fs := newFakeStore()
-	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestPersistFailureAbortsDelete(t *testing.T) {
 	root := t.TempDir()
 	fs := newFakeStore()
 	fs.fail = true
-	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
 
 	b, _ := m.Resolve("conv-2")
 	if _, err := m.Evict("conv-2"); err == nil {
@@ -282,7 +282,7 @@ func TestPersistFailureAbortsDelete(t *testing.T) {
 func TestPersistDirty(t *testing.T) {
 	root := t.TempDir()
 	fs := newFakeStore()
-	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
 
 	b, _ := m.Resolve("conv-3")
 	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("v1"), 0o644)
@@ -370,7 +370,7 @@ func (s *slowStore) Persist(ctx context.Context, id, dir string) error {
 func TestEvictCanceledByActivity(t *testing.T) {
 	root := t.TempDir()
 	ss := &slowStore{fakeStore: newFakeStore(), gate: make(chan struct{})}
-	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, ss)
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, ss)
 
 	b, _ := m.Resolve("conv-race")
 	res := make(chan struct {
@@ -409,7 +409,7 @@ func TestEvictCanceledByActivity(t *testing.T) {
 func TestPurgeEndsIdentity(t *testing.T) {
 	root := t.TempDir()
 	fs := newFakeStore()
-	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, fs)
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
 
 	b, _ := m.Resolve("conv-p")
 	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("x"), 0o644)
@@ -438,7 +438,7 @@ func TestPurgeEndsIdentity(t *testing.T) {
 
 func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 	root := t.TempDir()
-	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 
 	b, _ := m.Resolve("default")
 	// Layout: {root}/default/{meta.json,data}; Workspace points at data.
@@ -452,7 +452,7 @@ func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 
 	// "Restart": a new Manager over the same root sees the same identity.
 	time.Sleep(5 * time.Millisecond)
-	m2, _ := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil, 0, nil)
+	m2, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 	b2, _ := m2.Resolve("default")
 	if !b2.CreatedAt.Equal(created) {
 		t.Fatalf("CreatedAt not preserved across restart: %v vs %v", b2.CreatedAt, created)
