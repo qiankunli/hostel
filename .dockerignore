@@ -1,0 +1,9 @@
+# Build context: source + go module files only.
+/bin/
+/.workspace/
+/.devloop/
+*.out
+.git/
+.gitignore
+README*.md
+docs/

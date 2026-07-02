@@ -22,17 +22,17 @@ hostel 走更轻的路：把多个隔离的 **bed** 装进一个进程。bed 创
 
 ```bash
 make build
-./bin/hostel --isolation direct --workspace-root ./.workspace --addr :44772
+./bin/hostel --isolation direct --workspace-root ./.workspace --addr :8872
 
-curl -s localhost:44772/ping                                   # pong
-curl -s localhost:44772/healthz | jq
+curl -s localhost:8872/ping                                   # pong
+curl -s localhost:8872/healthz | jq
 # 前台命令（SSE 流）
-curl -sN -XPOST localhost:44772/command \
+curl -sN -XPOST localhost:8872/command \
   -H 'Content-Type: application/json' -d '{"command":"echo hi > /workspace/a.txt; cat /workspace/a.txt"}'
 # 文件读回
-curl -s 'localhost:44772/files/download?path=/workspace/a.txt'
+curl -s 'localhost:8872/files/download?path=/workspace/a.txt'
 # 指定 bed（另一个隔离单元，看不到 default 的文件）
-curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
+curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
 ```
 
 ## API（v1，OpenSandbox 兼容）
@@ -79,6 +79,21 @@ Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isola
 持久化：`--store s3` 时每个 bed 快照到 `s3://<bucket>/<prefix>/<bedID>.tar.gz`（任意 S3 兼容端点）——同 id 再建时恢复,驱逐（DELETE / idle 回收）或显式 checkpoint 时持久化,另有 `--persist-interval` 周期兜底。bed 的持久身份是快照,本地目录只是工作副本。`DELETE /v1/beds/:id` 是驱逐（身份保留）,`?purge=true` 连快照一起删、终结身份;驱逐撞上并发流量返回 `409 BED_BUSY`,不丢在途写入。
 
 容量：`--max-beds N` 限制并发 bed 数（0 = 不限；default bed 不被拒绝也不计数）。实例满时新建 bed 返回 `429 BED_LIMIT_EXCEEDED`——这是给调度方的背压信号（换个实例放置）；当前/最大数量由 `/healthz` 与 capabilities 上报。
+
+## 容器镜像
+
+`build/Dockerfile` 多阶段构建:静态纯 Go 二进制 + `debian-slim` 运行时,内置两个可选设施——**bubblewrap**(`--isolation bwrap`)与 **chromium**(浏览器 amenity)。两者都是可选的:hostel 启动时 probe、探不到就诚实降级,受限 pod(无 namespace)照常服务。
+
+```bash
+make image                     # 完整镜像(bwrap + chromium),当前架构
+make image-lean                # 仅 bwrap(~150MB);浏览器走 --chromium-cdp-url 或缺席
+make image-multiarch IMAGE=repo/hostel:tag   # linux/amd64 + arm64,推到镜像仓库
+docker run -p 8872:8872 hostel:dev
+```
+
+镜像多架构(`linux/amd64`、`linux/arm64`):纯 Go,builder 原生交叉编译(不走 QEMU),只有 debian runtime 阶段按目标架构跑、让 apt 拉对应架构的 bwrap/chromium。`make image-multiarch` 需要 `docker buildx` 且直接 push(多平台镜像无法 load 进本地 docker)。
+
+容器内默认值(均可用 `HOSTEL_*` 覆盖):`--isolation bwrap`、`--workspace-root /workspace`(声明为 volume)、`--chromium-path /usr/bin/chromium`。`tini` 作 PID 1(回收 shell/chromium 子进程);`HEALTHCHECK` 用 `hostel --health`(自打 `/healthz`,免 curl)。bwrap 是否真隔离取决于 pod 是否给了 user namespace / `CAP_SYS_ADMIN`,没有则日志记录降级、以 `direct` 运行。
 
 ## 许可与致谢
 

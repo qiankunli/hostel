@@ -40,17 +40,17 @@ microVM or a dedicated VM/container).
 
 ```bash
 make build
-./bin/hostel --isolation direct --workspace-root ./.workspace --addr :44772
+./bin/hostel --isolation direct --workspace-root ./.workspace --addr :8872
 
-curl -s localhost:44772/ping                                   # pong
-curl -s localhost:44772/healthz | jq
+curl -s localhost:8872/ping                                   # pong
+curl -s localhost:8872/healthz | jq
 # foreground command (SSE stream)
-curl -sN -XPOST localhost:44772/command \
+curl -sN -XPOST localhost:8872/command \
   -H 'Content-Type: application/json' -d '{"command":"echo hi > /workspace/a.txt; cat /workspace/a.txt"}'
 # read the file back
-curl -s 'localhost:44772/files/download?path=/workspace/a.txt'
+curl -s 'localhost:8872/files/download?path=/workspace/a.txt'
 # target another bed (a separate isolation unit; cannot see the default bed's files)
-curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
+curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv-1'
 ```
 
 ## API (v1, OpenSandbox-compatible)
@@ -134,6 +134,34 @@ is neither refused nor counted). A full instance answers new-bed requests with
 `429 BED_LIMIT_EXCEEDED` — the backpressure signal for a scheduler to place the
 sandbox elsewhere; current and max counts are reported by `/healthz` and the
 capabilities endpoint.
+
+## Container image
+
+`build/Dockerfile` is a multi-stage build: a static, pure-Go hostel binary on a
+`debian-slim` runtime that bundles the two optional facilities — **bubblewrap**
+(`--isolation bwrap`) and **chromium** (the browser amenity). Both stay optional:
+hostel probes them at boot and degrades honestly, so a locked-down pod without
+namespaces still serves.
+
+```bash
+make image                     # full image (bwrap + chromium), current arch
+make image-lean                # bwrap only (~150MB); browser via --chromium-cdp-url or absent
+make image-multiarch IMAGE=repo/hostel:tag   # linux/amd64 + arm64, pushed to a registry
+docker run -p 8872:8872 hostel:dev
+```
+
+The build is multi-arch (`linux/amd64`, `linux/arm64`): being pure Go, the
+builder cross-compiles natively (no QEMU) and only the debian runtime stage runs
+per-target so apt pulls the right-arch bwrap/chromium. `make image-multiarch`
+needs `docker buildx` and pushes directly (a multi-platform image can't load into
+the local docker).
+
+In-container defaults (all overridable via `HOSTEL_*`): `--isolation bwrap`,
+`--workspace-root /workspace` (a declared volume), `--chromium-path
+/usr/bin/chromium`. `tini` is PID 1 (reaps shell/chromium children); the
+`HEALTHCHECK` calls `hostel --health` (self-GETs `/healthz`, no curl needed).
+Whether bwrap actually isolates depends on the pod granting user namespaces /
+`CAP_SYS_ADMIN`; without them hostel logs the degrade and runs as `direct`.
 
 ## License & acknowledgements
 

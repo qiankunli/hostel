@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -35,8 +36,23 @@ import (
 	"github.com/qiankunli/hostel/internal/web"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
+	// Tiny pre-flight subcommands used by the container image (no curl needed).
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "--version", "-version":
+			fmt.Println(version)
+			return
+		case "--health", "-health":
+			os.Exit(healthCheck())
+		}
+	}
+
 	cfg := config.Load(os.Args[1:])
+	log.Printf("hostel %s starting", version)
 
 	iso := isolation.New(cfg.IsolationMode, cfg.WorkspaceRoot)
 	if !iso.Available() {
@@ -126,4 +142,26 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// healthCheck GETs the local /healthz (addr from HOSTEL_ADDR) for the image
+// HEALTHCHECK — no external tool required. Returns a process exit code.
+func healthCheck() int {
+	addr := os.Getenv("HOSTEL_ADDR")
+	if addr == "" {
+		addr = ":8872"
+	}
+	if addr[0] == ':' {
+		addr = "127.0.0.1" + addr
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
