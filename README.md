@@ -144,10 +144,17 @@ hostel probes them at boot and degrades honestly, so a locked-down pod without
 namespaces still serves.
 
 ```bash
-make image          # full image (bwrap + chromium)
-make image-lean     # bwrap only (~150MB); browser via --chromium-cdp-url or absent
+make image                     # full image (bwrap + chromium), current arch
+make image-lean                # bwrap only (~150MB); browser via --chromium-cdp-url or absent
+make image-multiarch IMAGE=repo/hostel:tag   # linux/amd64 + arm64, pushed to a registry
 docker run -p 44772:44772 hostel:dev
 ```
+
+The build is multi-arch (`linux/amd64`, `linux/arm64`): being pure Go, the
+builder cross-compiles natively (no QEMU) and only the debian runtime stage runs
+per-target so apt pulls the right-arch bwrap/chromium. `make image-multiarch`
+needs `docker buildx` and pushes directly (a multi-platform image can't load into
+the local docker).
 
 In-container defaults (all overridable via `HOSTEL_*`): `--isolation bwrap`,
 `--workspace-root /workspace` (a declared volume), `--chromium-path

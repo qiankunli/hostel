@@ -12,23 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Multi-arch (linux/amd64, linux/arm64). hostel is pure Go, so the builder runs
+# NATIVELY on the build host ($BUILDPLATFORM) and cross-compiles for the target
+# arch ($TARGETARCH) — no QEMU emulation of the Go toolchain. Only the runtime
+# stage runs as $TARGETPLATFORM, where apt resolves the right-arch bwrap/chromium.
+ARG BUILDPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
 # --- build stage: static, pure-Go hostel binary --------------------------
-FROM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+# GOPROXY overridable for networks without proxy.golang.org (e.g. corp mirrors).
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 WORKDIR /src
-# Deps first for layer caching.
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags "-s -w -X main.version=${VERSION}" \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/hostel ./cmd/hostel
 
 # --- runtime stage --------------------------------------------------------
 # Debian (not distroless/alpine) because the optional facilities need a real
 # base: bubblewrap for --isolation bwrap, chromium for the browser amenity.
 # Both stay OPTIONAL at runtime — hostel probes them at boot and degrades
-# honestly, so a locked-down pod without namespaces still serves.
+# honestly, so a locked-down pod without namespaces still serves. No --platform
+# here: this stage IS the target platform, so apt installs the correct arch.
 FROM debian:bookworm-slim
 
 # WITH_CHROMIUM=false builds a lean image (~150MB) with no browser amenity;

@@ -1,10 +1,11 @@
-.PHONY: help build test vet fmt lint tidy run run-bwrap linux smoke image image-lean clean
+.PHONY: help build test vet fmt lint tidy run run-bwrap linux smoke image image-lean image-multiarch clean
 
-BIN      := bin/hostel
-ADDR     := :44772
-WS_ROOT  := ./.workspace
-IMAGE    := hostel:dev
-VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+BIN       := bin/hostel
+ADDR      := :44772
+WS_ROOT   := ./.workspace
+IMAGE     := hostel:dev
+VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+PLATFORMS := linux/amd64,linux/arm64
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -57,6 +58,10 @@ image: ## Build the container image (bwrap + chromium)
 
 image-lean: ## Build the lean image (bwrap only, no browser amenity)
 	docker build -f build/Dockerfile -t $(IMAGE)-lean --build-arg VERSION=$(VERSION) --build-arg WITH_CHROMIUM=false .
+
+image-multiarch: ## Build + push a multi-arch image (needs buildx + a registry; set IMAGE=repo/name:tag)
+	docker buildx build -f build/Dockerfile --platform $(PLATFORMS) \
+		-t $(IMAGE) --build-arg VERSION=$(VERSION) --push .
 
 clean: ## Remove build artifacts and the dev workspace
 	rm -rf bin .workspace
