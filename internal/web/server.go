@@ -104,6 +104,12 @@ func (s *Server) routes() {
 		v1.GET("/:bedId", s.bedGet)
 		v1.DELETE("/:bedId", s.bedDelete)
 		v1.POST("/:bedId/checkpoint", s.bedCheckpoint)
+		// Browser amenity verbs (docs/amenity.md §2) — bed-scoped actions,
+		// never a raw CDP passthrough.
+		v1.POST("/:bedId/browser/goto", s.browserGoto)
+		v1.POST("/:bedId/browser/screenshot", s.browserScreenshot)
+		v1.POST("/:bedId/browser/text", s.browserText)
+		v1.POST("/:bedId/browser/close", s.browserClose)
 	}
 }
 

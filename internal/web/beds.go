@@ -17,10 +17,13 @@ package web
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/qiankunli/hostel/internal/bed"
 )
 
 func randomHex() string {
@@ -86,6 +89,10 @@ func (s *Server) bedDelete(c *gin.Context) {
 	id := c.Param("bedId")
 	if c.Query("purge") == "true" {
 		if err := s.mgr.Purge(id); err != nil {
+			if errors.Is(err, bed.ErrPurgeDefault) {
+				badRequest(c, err.Error())
+				return
+			}
 			runtimeError(c, err.Error())
 			return
 		}
@@ -110,9 +117,9 @@ func (s *Server) bedDelete(c *gin.Context) {
 // GET /v1/beds/capabilities — what this hostel can do (SDK feature detection).
 func (s *Server) capabilities(c *gin.Context) {
 	iso := s.mgr.Isolator()
-	svcNames := []string{}
-	for _, sv := range s.mgr.Services().List() {
-		svcNames = append(svcNames, sv.Name())
+	amenities := map[string]string{} // name → lifecycle state
+	for _, a := range s.mgr.Amenities().List() {
+		amenities[a.Name()] = a.State()
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"isolator":    iso.Name(),
@@ -120,15 +127,15 @@ func (s *Server) capabilities(c *gin.Context) {
 		// True when the bed workspace is mounted at the canonical /workspace
 		// inside the sandbox (bwrap): shell paths == file-API paths. False
 		// under direct, where /workspace is only the file-API virtual prefix.
-		"workspace_mount":  iso.MountPoint() != "",
-		"max_beds":         s.mgr.MaxBeds(),
-		"persistence":      s.mgr.StoreName(),
-		"files":            true,
-		"directories":      true,
-		"command":          true,
-		"session":          true,
-		"beds":             true,
-		"managed_services": svcNames, // empty in v1
+		"workspace_mount": iso.MountPoint() != "",
+		"max_beds":        s.mgr.MaxBeds(),
+		"persistence":     s.mgr.StoreName(),
+		"files":           true,
+		"directories":     true,
+		"command":         true,
+		"session":         true,
+		"beds":            true,
+		"amenities":       amenities, // name → unavailable|idle|running
 		// Explicitly-not-yet capabilities, so SDKs don't probe blindly.
 		"pty":            false,
 		"code":           false,

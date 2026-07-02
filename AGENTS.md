@@ -2,7 +2,7 @@
 
 ## 项目定位与边界
 
-**面向 AI agent 的 sandbox runtime**：在一台机器 / 一个容器内管理多个隔离执行单元（**bed**），对外提供 **OpenSandbox 兼容** HTTP API。可单机跑（laptop/VM/CI），也可作为多租户共享实例的 in-process runtime，由上层调度系统按 `sandbox_id → (实例, bed)` 路由驱动。
+**面向 AI agent 的 sandbox runtime**：在一台机器 / 一个容器内管理多个隔离执行单元（**bed**），对外提供 **OpenSandbox 兼容** HTTP API。形态上 hostel = **web server + bed manager + amenity manager + store** 的组合（后续可扩充更多 manager）。可单机跑（laptop/VM/CI），也可作为多租户共享实例的 in-process runtime，由上层调度系统按 `sandbox_id → (实例, bed)` 路由驱动。
 
 - **做**：bed 生命周期、exec / file、共享多租服务（Chromium/Jupyter…）管理。
 - **不做**（留给上层调度系统）：实例调度、跨实例路由、计费配额。
@@ -21,7 +21,7 @@ internal/
 │   └── command.go     一次性命令 registry：前台/后台、status、logs（cursor 增量、环形缓冲）
 ├── fsops/             bed-workspace-rooted 文件操作；Resolve 做路径 confine + /workspace 虚拟前缀 rebase
 ├── store/             workspace 持久化：Store 接口 + noop/s3；tar 打包（zip-slip 防护）；见 docs/persistence.md
-├── service/           ManagedService 接口 + Registry（v1 空；bed 删除/idle 调 ReleaseAll）
+├── amenity/           Amenity 接口(生命周期 State)+ Registry；chromium 实例(共享浏览器/每 bed BrowserContext)；见 docs/amenity.md
 └── web/               gin 薄适配层：server(路由+bedOf 解析) / errors / sse / files / command / beds
 ```
 
@@ -33,7 +33,7 @@ internal/
 - **路径语义按模式**：`/workspace/x` 永远是 **file API** 的虚拟前缀（`fsops.Resolve` rebase + 拒绝逃逸）。**bwrap 下** workspace 同时真实挂载在 bed 内 `/workspace`（shell 路径 == file API 路径，cwd 由 `web` 层 `resolveCwd` 按 `Isolator.MountPoint()` 映射）；**direct 下**无挂载能力，shell cwd 是宿主真实目录。调用方以 capabilities 的 `workspace_mount` 探测。
 - **API 对齐 execd**：响应 JSON 结构、错误码、SSE 帧（`<json>\n\n`，事件 shape = execd `ServerStreamEvent`）都对齐 OpenSandbox，SDK 不改。加/改端点先对 `OpenSandbox/specs/execd-api.yaml`。
 - **isolation 是可换后端**：`direct` 无隔离（dev/可信）；`bwrap` linux ns + 数据隔离（tmpfs 遮蔽兄弟 bed / 宿主敏感路径、密钥形 env 剥除、boot 时 probe，见 `docs/data-isolation.md`）。更强（真 setuid/seccomp、overlay CoW、PTY WS）按 OSEP-0013 增补，全走 `Isolator` 接口，不散在业务层。
-- **managed-service 通则**：重资产、自带多租的服务由 hostel 在 bed 外管一份，用应用原生机制切租（Chromium→BrowserContext、Jupyter→kernel），产物落对应 bed 的 workspace。新增实例 = 实现 `ManagedService` + 注册，bed 生命周期已备 `ReleaseTenant` 钩子。
+- **amenity 通则**：重资产、自带多租的共享设施由 hostel 在 bed 外管一份，用应用原生机制切租（Chromium→BrowserContext、Jupyter→kernel），产物落对应 bed 的 workspace。amenity 有自己的生命周期（idle→running 按需启停）。新增实例 = 实现 `Amenity` + 注册，bed evict/purge 已接 `ReleaseAll` 钩子。北向只暴露 bed 级动作，**不透传 CDP/协议 socket**（会跨租户）。见 `docs/amenity.md`。
 - **常驻 shell 的坑**：一个 Shell 只能有**一个** stdout reader（否则 run 间串输出——v1 踩过）；Run 之间串行；`exit` 会杀死 session，非零退出码用子 shell（`sh -c "exit N"`）。**锁纪律**：`runMu` 串行化 Run 且只有 Run 碰；`mu` 只护 `dead` 标志、纳秒级持有——曾因单锁设计让「shell 死亡+未断开客户端」死锁整个 daemon（含 healthz），别往 `mu` 里加阻塞代码（见 shell.go LOCKING 注释）。
 - Go 项目常规：改完 `go build ./...` + `go test ./...` + `go vet ./...` 三件套过再提交（见 `Makefile`）。仓库在 `github.com/qiankunli/hostel`，保护分支 main 走 PR。
 

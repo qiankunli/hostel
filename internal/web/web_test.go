@@ -331,7 +331,7 @@ func TestDeleteEvictVsPurge(t *testing.T) {
 	}
 	// Default bed refuses purge.
 	rec = do(t, s, "DELETE", "/v1/beds/default?purge=true", nil, nil)
-	if rec.Code != 500 {
-		t.Fatalf("purge default = %d (want refusal)", rec.Code)
+	if rec.Code != 400 {
+		t.Fatalf("purge default = %d (want 400 client error)", rec.Code)
 	}
 }

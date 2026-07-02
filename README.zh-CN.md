@@ -59,9 +59,22 @@ curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: con
 
 有些工具启动重、但天生支持多租户——浏览器、Jupyter server。hostel 会只跑一份共享实例，用工具自身的机制给每个 bed 一份独立切片（每 bed 一个浏览器 context、一个 kernel），产物存进该 bed 的 workspace。v1 先接好释放钩子（bed 删除或超时时释放它的切片），Chromium/Jupyter 的实际接入后续再加。
 
+## amenity(共享设施)
+
+重资产、自带多租能力的工具由 hostel **共享一份**、按 bed 切片。首个是 **Chromium**:一份共享浏览器,每 bed 一个隔离 BrowserContext,产物落 bed workspace。启用方式:镜像带 chromium 二进制(`--chromium-path`,或自动探测)或 attach 既有实例(`--chromium-cdp-url`)。北向只给 bed 级动作(**不透传 CDP socket**):
+
+```
+POST /v1/beds/:id/browser/goto        {url}
+POST /v1/beds/:id/browser/screenshot  {path?}   # 存进 bed workspace
+POST /v1/beds/:id/browser/text
+POST /v1/beds/:id/browser/close
+```
+
+浏览器首次使用时启动、空闲后自停;capabilities 报 `amenities: {chromium: idle|running}`。
+
 ## 配置
 
-Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isolation` / `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` / `--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval`。
+Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isolation` / `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` / `--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval` / `--chromium-path` / `--chromium-cdp-url` / `--chromium-idle-stop`。
 
 持久化：`--store s3` 时每个 bed 快照到 `s3://<bucket>/<prefix>/<bedID>.tar.gz`（任意 S3 兼容端点）——同 id 再建时恢复,驱逐（DELETE / idle 回收）或显式 checkpoint 时持久化,另有 `--persist-interval` 周期兜底。bed 的持久身份是快照,本地目录只是工作副本。`DELETE /v1/beds/:id` 是驱逐（身份保留）,`?purge=true` 连快照一起删、终结身份;驱逐撞上并发流量返回 `409 BED_BUSY`,不丢在途写入。
 

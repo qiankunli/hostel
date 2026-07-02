@@ -27,10 +27,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/bed"
 	"github.com/qiankunli/hostel/internal/config"
 	"github.com/qiankunli/hostel/internal/isolation"
-	"github.com/qiankunli/hostel/internal/service"
 	"github.com/qiankunli/hostel/internal/store"
 	"github.com/qiankunli/hostel/internal/web"
 )
@@ -43,9 +43,18 @@ func main() {
 		log.Printf("hostel: isolator %q unavailable on this host — commands will run with reduced/no isolation", iso.Name())
 	}
 
-	// v1: no managed services registered; the registry + ReleaseTenant hook
-	// exist so Chromium/Jupyter drop in later without touching bed lifecycle.
-	services := service.NewRegistry()
+	// Amenity manager: shared facilities light up per deployment. Chromium is
+	// registered when launch (binary) or attach (--chromium-cdp-url) is
+	// possible; otherwise the facility is honestly absent.
+	amenities := amenity.NewRegistry()
+	if br, ok := amenity.NewChromium(amenity.ChromiumConfig{
+		ExecPath: cfg.ChromiumPath,
+		CDPURL:   cfg.ChromiumCDPURL,
+		IdleStop: cfg.ChromiumIdleStop,
+	}); ok {
+		amenities.Register(br.(amenity.Amenity))
+		log.Printf("hostel: amenity chromium registered (attach=%v)", cfg.ChromiumCDPURL != "")
+	}
 
 	// Fail fast on a misconfigured store: booting with silent noop while the
 	// operator believes snapshots are on would be quiet data loss.
@@ -59,7 +68,7 @@ func main() {
 		log.Fatalf("hostel: init store: %v", err)
 	}
 
-	mgr, err := bed.NewManager(cfg.WorkspaceRoot, cfg.DefaultBed, cfg.ShellPath, iso, services, cfg.MaxBeds, st)
+	mgr, err := bed.NewManager(cfg.WorkspaceRoot, cfg.DefaultBed, cfg.ShellPath, iso, amenities, cfg.MaxBeds, st)
 	if err != nil {
 		log.Fatalf("hostel: init bed manager: %v", err)
 	}

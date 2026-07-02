@@ -110,7 +110,8 @@ bed 的三个正交维度各有专门文档，本文只留一句定位：
 - **数据隔离**（一个 bed 不能读写另一个 bed / 宿主的数据；tmpfs 遮蔽兄弟 bed + `/workspace` 规范挂载）：`data-isolation.md`
 - **数据持久化**（本地 workspace 是工作副本，S3 快照是持久身份；生命周期边界同步）：`persistence.md`
 - **资源隔离**（per-bed cgroup v2 子组防吵闹邻居；方案已记、实现推后）：`resource-isolation.md`
+- **amenity 共享设施**（Chromium/Jupyter 等重资产进程共享、按 bed 切租、bed 级动作不裸暴露 CDP）：`amenity.md`
 
 ## 十一、Roadmap（v1.1+）
 
-数据隔离补强（`data-isolation.md`，先行）· S3 Store 持久化（`persistence.md`）· per-bed cgroup（`resource-isolation.md`，推后）· bwrap 安全纵深（seccomp memfd / 真 setuid）· overlay CoW（临时层）· PTY WS · Chromium & Jupyter managed-service 实例 · 上层调度系统对接 · 产品化外壳（API 版本化、独立发布）。
+数据隔离补强（`data-isolation.md`，先行）· S3 Store 持久化（`persistence.md`）· per-bed cgroup（`resource-isolation.md`，推后）· bwrap 安全纵深（seccomp memfd / 真 setuid）· overlay CoW（临时层）· PTY WS · Jupyter amenity 实例 · 交互动作全集 · 上层调度系统对接 · 产品化外壳（API 版本化、独立发布）。
