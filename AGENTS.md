@@ -34,7 +34,7 @@ internal/
 - **API 对齐 execd**：响应 JSON 结构、错误码、SSE 帧（`<json>\n\n`，事件 shape = execd `ServerStreamEvent`）都对齐 OpenSandbox，SDK 不改。加/改端点先对 `OpenSandbox/specs/execd-api.yaml`。
 - **isolation 是可换后端**：`direct` 无隔离（dev/可信）；`bwrap` linux ns + 数据隔离（tmpfs 遮蔽兄弟 bed / 宿主敏感路径、密钥形 env 剥除、boot 时 probe，见 `docs/data-isolation.md`）。更强（真 setuid/seccomp、overlay CoW、PTY WS）按 OSEP-0013 增补，全走 `Isolator` 接口，不散在业务层。
 - **managed-service 通则**：重资产、自带多租的服务由 hostel 在 bed 外管一份，用应用原生机制切租（Chromium→BrowserContext、Jupyter→kernel），产物落对应 bed 的 workspace。新增实例 = 实现 `ManagedService` + 注册，bed 生命周期已备 `ReleaseTenant` 钩子。
-- **常驻 shell 的坑**：一个 Shell 只能有**一个** stdout reader（否则 run 间串输出——v1 踩过）；Run 之间串行；`exit` 会杀死 session，非零退出码用子 shell（`sh -c "exit N"`）。
+- **常驻 shell 的坑**：一个 Shell 只能有**一个** stdout reader（否则 run 间串输出——v1 踩过）；Run 之间串行；`exit` 会杀死 session，非零退出码用子 shell（`sh -c "exit N"`）。**锁纪律**：`runMu` 串行化 Run 且只有 Run 碰；`mu` 只护 `dead` 标志、纳秒级持有——曾因单锁设计让「shell 死亡+未断开客户端」死锁整个 daemon（含 healthz），别往 `mu` 里加阻塞代码（见 shell.go LOCKING 注释）。
 - Go 项目常规：改完 `go build ./...` + `go test ./...` + `go vet ./...` 三件套过再提交（见 `Makefile`）。仓库在 `github.com/qiankunli/hostel`，保护分支 main 走 PR。
 
 ## References
