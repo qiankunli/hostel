@@ -40,18 +40,19 @@ import (
 var version = "dev"
 
 func main() {
-	// Tiny pre-flight subcommands used by the container image (no curl needed).
-	for _, a := range os.Args[1:] {
-		switch a {
-		case "--version", "-version":
-			fmt.Println(version)
-			return
-		case "--health", "-health":
-			os.Exit(healthCheck())
-		}
+	cfg := config.Load(os.Args[1:])
+
+	// Preflight subcommands used by the image (no curl needed). Handled after
+	// config.Load so --health probes the SAME addr the server would listen on
+	// (flag > env > default), not a separately-guessed one.
+	if cfg.ShowVersion {
+		fmt.Println(version)
+		return
+	}
+	if cfg.HealthCheck {
+		os.Exit(healthCheck(cfg.Addr))
 	}
 
-	cfg := config.Load(os.Args[1:])
 	log.Printf("hostel %s starting", version)
 
 	iso := isolation.New(cfg.IsolationMode, cfg.WorkspaceRoot)
@@ -144,12 +145,12 @@ func main() {
 	_ = srv.Shutdown(shutdownCtx)
 }
 
-// healthCheck GETs the local /healthz (addr from HOSTEL_ADDR) for the image
-// HEALTHCHECK — no external tool required. Returns a process exit code.
-func healthCheck() int {
-	addr := os.Getenv("HOSTEL_ADDR")
+// healthCheck GETs the local /healthz for the image HEALTHCHECK — no external
+// tool required. addr is the server's resolved listen address, so the probe
+// can never target the wrong port.
+func healthCheck(addr string) int {
 	if addr == "" {
-		addr = ":8872"
+		addr = config.DefaultAddr
 	}
 	if addr[0] == ':' {
 		addr = "127.0.0.1" + addr
