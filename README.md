@@ -107,6 +107,7 @@ socket is never exposed):
 POST /v1/beds/:id/browser/goto        {url}
 POST /v1/beds/:id/browser/screenshot  {path?}   # saved under the bed workspace
 POST /v1/beds/:id/browser/text
+POST /v1/beds/:id/browser/{click,type,press,scroll,wait}
 POST /v1/beds/:id/browser/close
 ```
 

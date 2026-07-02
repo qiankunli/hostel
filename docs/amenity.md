@@ -48,13 +48,18 @@ type Amenity interface {
 ### 2. 北向 API：bed 级动作，v1 刻意小
 
 ```
-POST /v1/beds/:bedId/browser/goto        {url}            → {title, url}
-POST /v1/beds/:bedId/browser/screenshot  {path?}          → {path}   # 落 bed data/，file API 可取
-POST /v1/beds/:bedId/browser/text        {}               → {text}   # 当前页可读文本
-POST /v1/beds/:bedId/browser/close       {}               → 释放该 bed 的 context
+POST /v1/beds/:bedId/browser/goto        {url}                 → {title, url}
+POST /v1/beds/:bedId/browser/text        {}                    → {text}   # 当前页可读文本
+POST /v1/beds/:bedId/browser/screenshot  {path?}               → {path}   # 落 bed data/，file API 可取
+POST /v1/beds/:bedId/browser/click       {selector}
+POST /v1/beds/:bedId/browser/type        {selector,text,clear?}          # clear 用 focus+清空 activeElement，再 SendKeys 触发真键事件
+POST /v1/beds/:bedId/browser/press       {key}                           # Enter/Tab/Escape/Arrow*/… 或单字符
+POST /v1/beds/:bedId/browser/scroll      {dx?,dy?}
+POST /v1/beds/:bedId/browser/wait        {selector}                      # 等元素可见（受 action timeout 约束）
+POST /v1/beds/:bedId/browser/close       {}                              # 释放该 bed 的 context
 ```
 
-- 动作集 v1 只有 goto / screenshot / text / close——覆盖 agent 最高频的"打开-看-截"，点击/输入/JS 求值等交互动作 v1.1 按需加（参照内部 as serve 的动作清单渐进）。
+- 动作集覆盖 goto/text/screenshot + 交互 click/type/press/scroll/wait/close，对齐内部 as serve 词汇；JS 求值（evaluate）不开放（注入面），需要时走受限的具名动作。
 - 不提供 browser 级 CDP ws 透传（见理念 3）；将来若要支持 playwright 直连，走"页面级 target ws + 校验 targetId 归属"的受限代理，单独设计。
 
 ### 3. CDP 客户端选型：chromedp
@@ -82,5 +87,4 @@ launch 模式：镜像里带 chromium/chrome 二进制（`--chromium-path` 或 P
 
 - Jupyter amenity（第二个实例，验证框架通用性后加）；
 - browser CDP ws 透传 / playwright 直连；
-- 交互动作全集（click/type/scroll/evaluate）；
 - context 状态持久化（cookie 随 evict 消失）。

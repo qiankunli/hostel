@@ -30,6 +30,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/kb"
 )
 
 // Browser is the action surface the web layer adapts to HTTP. Deliberately
@@ -43,6 +44,17 @@ type Browser interface {
 	// snapshots).
 	Screenshot(ctx context.Context, bedID, workspace, relPath string) (string, error)
 	Text(ctx context.Context, bedID, workspace string) (string, error)
+	// Interaction verbs (docs/amenity.md §2), selector = CSS query.
+	Click(ctx context.Context, bedID, workspace, selector string) error
+	// Type sends text into the element; clear empties it first.
+	Type(ctx context.Context, bedID, workspace, selector, text string, clear bool) error
+	// Press dispatches a key (Enter, Tab, Escape, Backspace, Arrow*, or a
+	// single literal char) to the focused element.
+	Press(ctx context.Context, bedID, workspace, key string) error
+	// Scroll scrolls the window by (dx, dy) pixels.
+	Scroll(ctx context.Context, bedID, workspace string, dx, dy int) error
+	// Wait blocks until selector becomes visible (bounded by the action timeout).
+	Wait(ctx context.Context, bedID, workspace, selector string) error
 	ReleaseTenant(bedID string) error
 }
 
@@ -312,6 +324,54 @@ func (c *chromium) Text(ctx context.Context, bedID, workspace string) (string, e
 	err := c.run(ctx, bedID, workspace,
 		chromedp.Text("body", &text, chromedp.ByQuery))
 	return text, err
+}
+
+func (c *chromium) Click(ctx context.Context, bedID, workspace, selector string) error {
+	return c.run(ctx, bedID, workspace,
+		chromedp.WaitVisible(selector, chromedp.ByQuery),
+		chromedp.Click(selector, chromedp.ByQuery))
+}
+
+func (c *chromium) Type(ctx context.Context, bedID, workspace, selector, text string, clear bool) error {
+	actions := []chromedp.Action{chromedp.WaitVisible(selector, chromedp.ByQuery)}
+	if clear {
+		// Focus the node, then empty the FOCUSED element — no selector goes
+		// into JS (no injection), and it's deterministic where chromedp.Clear
+		// / SetValue are flaky in headless. SendKeys after still fires real
+		// keyboard events, which SPAs rely on.
+		actions = append(actions,
+			chromedp.Focus(selector, chromedp.ByQuery),
+			chromedp.Evaluate(`document.activeElement && (document.activeElement.value = "")`, nil))
+	}
+	actions = append(actions, chromedp.SendKeys(selector, text, chromedp.ByQuery))
+	return c.run(ctx, bedID, workspace, actions...)
+}
+
+// namedKeys maps friendly key names to their key-event runes; anything not
+// listed is sent as a literal (a single char like "a" works as-is).
+var namedKeys = map[string]string{
+	"Enter": kb.Enter, "Tab": kb.Tab, "Escape": kb.Escape, "Backspace": kb.Backspace,
+	"Delete": kb.Delete, "ArrowDown": kb.ArrowDown, "ArrowUp": kb.ArrowUp,
+	"ArrowLeft": kb.ArrowLeft, "ArrowRight": kb.ArrowRight, "PageDown": kb.PageDown,
+	"PageUp": kb.PageUp, "Home": kb.Home, "End": kb.End,
+}
+
+func (c *chromium) Press(ctx context.Context, bedID, workspace, key string) error {
+	send := key
+	if mapped, ok := namedKeys[key]; ok {
+		send = mapped
+	}
+	return c.run(ctx, bedID, workspace, chromedp.KeyEvent(send))
+}
+
+func (c *chromium) Scroll(ctx context.Context, bedID, workspace string, dx, dy int) error {
+	// Numeric-only interpolation — no injection surface.
+	js := fmt.Sprintf("window.scrollBy(%d, %d)", dx, dy)
+	return c.run(ctx, bedID, workspace, chromedp.Evaluate(js, nil))
+}
+
+func (c *chromium) Wait(ctx context.Context, bedID, workspace, selector string) error {
+	return c.run(ctx, bedID, workspace, chromedp.WaitVisible(selector, chromedp.ByQuery))
 }
 
 func (c *chromium) Screenshot(ctx context.Context, bedID, workspace, relPath string) (string, error) {

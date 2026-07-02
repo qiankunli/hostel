@@ -119,6 +119,43 @@ func TestChromiumEndToEnd(t *testing.T) {
 		t.Fatal("escaping screenshot path not rejected")
 	}
 
+	// Interaction verbs on a small form page (bedA).
+	form := `data:text/html,` +
+		`<input id="in"><button id="btn" onclick="document.getElementById('out').innerText=document.getElementById('in').value">go</button>` +
+		`<div id="out"></div><div id="late" style="display:none">shown</div>` +
+		`<script>document.getElementById('in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('out').innerText='ENTER:'+e.target.value})</script>`
+	if _, _, err := br.Goto(ctx, "bedA", wsA, form); err != nil {
+		t.Fatalf("Goto form: %v", err)
+	}
+	if err := br.Wait(ctx, "bedA", wsA, "#in"); err != nil {
+		t.Fatalf("Wait #in: %v", err)
+	}
+	if err := br.Type(ctx, "bedA", wsA, "#in", "hello", true); err != nil {
+		t.Fatalf("Type: %v", err)
+	}
+	if err := br.Click(ctx, "bedA", wsA, "#btn"); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	out, _ := br.Text(ctx, "bedA", wsA)
+	if !strings.Contains(out, "hello") {
+		t.Fatalf("after type+click, out = %q", out)
+	}
+	// Press Enter in the focused input triggers the keydown handler.
+	if err := br.Type(ctx, "bedA", wsA, "#in", "world", true); err != nil {
+		t.Fatalf("Type 2: %v", err)
+	}
+	if err := br.Press(ctx, "bedA", wsA, "Enter"); err != nil {
+		t.Fatalf("Press Enter: %v", err)
+	}
+	out2, _ := br.Text(ctx, "bedA", wsA)
+	if !strings.Contains(out2, "ENTER:world") || strings.Contains(out2, "helloworld") {
+		t.Fatalf("after Enter, out = %q", out2)
+	}
+	// Scroll doesn't error on a short page.
+	if err := br.Scroll(ctx, "bedA", wsA, 0, 100); err != nil {
+		t.Fatalf("Scroll: %v", err)
+	}
+
 	// Release both tenants → idle-stop kicks in.
 	_ = br.ReleaseTenant("bedA")
 	_ = br.ReleaseTenant("bedB")

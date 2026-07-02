@@ -107,3 +107,103 @@ func (s *Server) browserClose(c *gin.Context) {
 	}
 	c.Status(http.StatusOK)
 }
+
+// POST /v1/beds/:bedId/browser/click {selector}
+func (s *Server) browserClick(c *gin.Context) {
+	b, br := s.browserOf(c)
+	if br == nil {
+		return
+	}
+	var req struct {
+		Selector string `json:"selector"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Selector == "" {
+		badRequest(c, "missing 'selector'")
+		return
+	}
+	if err := br.Click(c.Request.Context(), b.ID, b.Workspace, req.Selector); err != nil {
+		runtimeError(c, err.Error())
+		return
+	}
+	c.Status(http.StatusOK)
+}
+
+// POST /v1/beds/:bedId/browser/type {selector, text, clear?}
+func (s *Server) browserType(c *gin.Context) {
+	b, br := s.browserOf(c)
+	if br == nil {
+		return
+	}
+	var req struct {
+		Selector string `json:"selector"`
+		Text     string `json:"text"`
+		Clear    bool   `json:"clear,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Selector == "" {
+		badRequest(c, "missing 'selector'")
+		return
+	}
+	if err := br.Type(c.Request.Context(), b.ID, b.Workspace, req.Selector, req.Text, req.Clear); err != nil {
+		runtimeError(c, err.Error())
+		return
+	}
+	c.Status(http.StatusOK)
+}
+
+// POST /v1/beds/:bedId/browser/press {key}
+func (s *Server) browserPress(c *gin.Context) {
+	b, br := s.browserOf(c)
+	if br == nil {
+		return
+	}
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Key == "" {
+		badRequest(c, "missing 'key'")
+		return
+	}
+	if err := br.Press(c.Request.Context(), b.ID, b.Workspace, req.Key); err != nil {
+		runtimeError(c, err.Error())
+		return
+	}
+	c.Status(http.StatusOK)
+}
+
+// POST /v1/beds/:bedId/browser/scroll {dx?, dy?}
+func (s *Server) browserScroll(c *gin.Context) {
+	b, br := s.browserOf(c)
+	if br == nil {
+		return
+	}
+	var req struct {
+		DX int `json:"dx,omitempty"`
+		DY int `json:"dy,omitempty"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if err := br.Scroll(c.Request.Context(), b.ID, b.Workspace, req.DX, req.DY); err != nil {
+		runtimeError(c, err.Error())
+		return
+	}
+	c.Status(http.StatusOK)
+}
+
+// POST /v1/beds/:bedId/browser/wait {selector}
+func (s *Server) browserWait(c *gin.Context) {
+	b, br := s.browserOf(c)
+	if br == nil {
+		return
+	}
+	var req struct {
+		Selector string `json:"selector"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Selector == "" {
+		badRequest(c, "missing 'selector'")
+		return
+	}
+	if err := br.Wait(c.Request.Context(), b.ID, b.Workspace, req.Selector); err != nil {
+		runtimeError(c, err.Error())
+		return
+	}
+	c.Status(http.StatusOK)
+}
