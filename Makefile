@@ -1,21 +1,54 @@
-.PHONY: build test vet run tidy clean
+.PHONY: help build test vet fmt lint tidy run run-bwrap linux smoke clean
 
-BIN := bin/hostel
+BIN      := bin/hostel
+ADDR     := :44772
+WS_ROOT  := ./.workspace
 
-build:
+help: ## List available targets
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+build: ## Build the hostel binary for the current platform
 	go build -o $(BIN) ./cmd/hostel
 
-test:
+test: ## Run all tests
 	go test ./...
 
-vet:
+vet: ## Run go vet
 	go vet ./...
 
-tidy:
+fmt: ## Format all Go sources
+	gofmt -w .
+
+lint: vet ## gofmt check + go vet (CI gate)
+	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed on:"; echo "$$out"; exit 1; fi
+
+tidy: ## Sync go.mod/go.sum
 	go mod tidy
 
-run: build
-	$(BIN) --isolation direct --workspace-root ./.workspace --addr :44772
+run: build ## Run locally with no isolation (dev, any platform)
+	$(BIN) --isolation direct --workspace-root $(WS_ROOT) --addr $(ADDR)
 
-clean:
+run-bwrap: build ## Run with bwrap isolation (Linux with bubblewrap installed)
+	$(BIN) --isolation bwrap --workspace-root $(WS_ROOT) --addr $(ADDR)
+
+linux: ## Cross-compile static Linux binaries (amd64 + arm64) into bin/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/hostel-linux-amd64 ./cmd/hostel
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/hostel-linux-arm64 ./cmd/hostel
+
+smoke: build ## Boot on a scratch port and curl the core endpoints end to end
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	$(BIN) --isolation direct --workspace-root $$tmp/ws --addr :44799 & pid=$$!; \
+	trap "kill $$pid 2>/dev/null; rm -rf $$tmp" EXIT; \
+	sleep 1; \
+	curl -sf localhost:44799/ping >/dev/null; \
+	curl -sf localhost:44799/healthz >/dev/null; \
+	curl -sfN -XPOST localhost:44799/command -H 'Content-Type: application/json' \
+	  -d '{"command":"echo smoke > s.txt && cat s.txt"}' | grep -q smoke; \
+	curl -sf 'localhost:44799/files/download?path=/workspace/s.txt' | grep -q smoke; \
+	curl -sf -o /dev/null -w '%{http_code}' 'localhost:44799/files/download?path=/workspace/s.txt' \
+	  -H 'X-Hostel-Bed: other' | grep -q 404; \
+	echo "smoke OK"
+
+clean: ## Remove build artifacts and the dev workspace
 	rm -rf bin .workspace

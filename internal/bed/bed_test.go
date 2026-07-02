@@ -25,7 +25,8 @@ import (
 
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
-	m, err := NewManager(t.TempDir(), "default", "/bin/bash", isolation.New("direct"), nil)
+	root := t.TempDir()
+	m, err := NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

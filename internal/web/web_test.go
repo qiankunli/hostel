@@ -30,7 +30,8 @@ import (
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
-	mgr, err := bed.NewManager(t.TempDir(), "default", "/bin/bash", isolation.New("direct"), nil)
+	root := t.TempDir()
+	mgr, err := bed.NewManager(root, "default", "/bin/bash", isolation.New("direct", root), nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

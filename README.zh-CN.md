@@ -46,12 +46,12 @@ curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: con
 | 会话 | `POST /session`、`POST /session/:id/run`(SSE)、`DELETE /session/:id` |
 | bed 管理 | `GET/POST /v1/beds`、`GET/DELETE /v1/beds/:id`、`GET /v1/beds/capabilities` |
 
-路径语义：客户端用 `/workspace/...` 寻址，hostel rebase 到该 bed 的 workspace 目录；相对路径即 workspace 相对；workspace 之外的绝对路径被拒绝（bed 看不到宿主）。注意：`/workspace` 是 **file API** 的约定；shell 命令的 cwd 是 bed 的真实 workspace 目录，v1 用真实/相对路径。
+路径语义：客户端用 `/workspace/...` 寻址，hostel rebase 到该 bed 的 workspace 目录；相对路径即 workspace 相对；workspace 之外的绝对路径被拒绝（bed 看不到宿主）。`bwrap` 下 workspace 还会**真实挂载**在沙箱内 `/workspace`——shell 路径与 file API 路径同名同物；`direct` 下（无 mount namespace）shell cwd 是宿主真实目录。以 capabilities 的 `workspace_mount` 区分两种模式。
 
 ## 隔离
 
 - `direct`（默认，全平台）：仅 chdir 到 workspace，无隔离——dev / 可信单租户；
-- `bwrap`（Linux）：mount/pid/uts/ipc namespace + RO 根 + workspace bind；非 Linux 退化 direct。
+- `bwrap`（Linux）：mount/pid/uts/ipc namespace + RO 根；兄弟 bed 被 tmpfs 遮蔽（视图里不存在），自己的 workspace rw 挂载在 `/workspace`，宿主用户数据与平台挂载凭据被遮蔽，密钥形环境变量被剥除。启动时 probe；不可用则退化 direct 并如实上报。
 
 更强的隔离（真 setuid、seccomp、每个 bed 的 CPU/内存限制（cgroup）、写时复制 overlay workspace、PTY over WebSocket）在路线图上。
 

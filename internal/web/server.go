@@ -122,10 +122,11 @@ func (s *Server) opsOf(c *gin.Context) (*bed.Bed, *fsops.Ops) {
 func (s *Server) healthz(c *gin.Context) {
 	iso := s.mgr.Isolator()
 	c.JSON(http.StatusOK, gin.H{
-		"ok":            true,
-		"isolator":      iso.Name(),
-		"isolator_ok":   iso.Available(),
-		"beds":          len(s.mgr.List()),
-		"default_bed":   s.mgr.DefaultBedID(),
+		"ok":              true,
+		"isolator":        iso.Name(),
+		"isolator_ok":     iso.Available(),
+		"workspace_mount": iso.MountPoint() != "",
+		"beds":            len(s.mgr.List()),
+		"default_bed":     s.mgr.DefaultBedID(),
 	})
 }
