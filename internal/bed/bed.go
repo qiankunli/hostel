@@ -20,6 +20,7 @@
 package bed
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,14 +64,20 @@ type Manager struct {
 	shellPath  string
 	services   *service.Registry // nil-safe; ReleaseAll on bed teardown
 	commands   *CommandRegistry  // one-shot commands, daemon-global ids
+	maxBeds    int               // cap on concurrent beds; 0 = unlimited
 
 	mu   sync.Mutex
 	beds map[string]*Bed
 }
 
+// ErrBedLimit is returned when creating a new bed would exceed the configured
+// cap. Callers should surface it as backpressure (HTTP 429): the upstream
+// scheduler is expected to place the sandbox on another instance.
+var ErrBedLimit = errors.New("bed: max bed count reached")
+
 // NewManager creates the bed manager and ensures the workspace root exists.
-// services may be nil.
-func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, services *service.Registry) (*Manager, error) {
+// services may be nil; maxBeds 0 = unlimited.
+func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, services *service.Registry, maxBeds int) (*Manager, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace root %s: %w", root, err)
 	}
@@ -81,6 +88,7 @@ func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, serv
 		shellPath:  shellPath,
 		services:   services,
 		commands:   newCommandRegistry(),
+		maxBeds:    maxBeds,
 		beds:       make(map[string]*Bed),
 	}, nil
 }
@@ -94,6 +102,9 @@ func (m *Manager) Services() *service.Registry { return m.services }
 // Commands exposes the one-shot command registry (spec /command endpoints are
 // bed-agnostic on status/logs lookups — command ids are daemon-global).
 func (m *Manager) Commands() *CommandRegistry { return m.commands }
+
+// MaxBeds reports the configured cap (0 = unlimited) for capacity reporting.
+func (m *Manager) MaxBeds() int { return m.maxBeds }
 
 // DefaultBedID reports the id used when a request omits a bed.
 func (m *Manager) DefaultBedID() string { return m.defaultBed }
@@ -112,6 +123,19 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if b, ok := m.beds[id]; ok {
 		b.touch()
 		return b, nil
+	}
+	// Cap NEW beds only; the default bed is the single-tenant fallback and
+	// must never be refused (a full instance still serves its primary tenant)
+	// nor counted — max-beds means "N tenant beds", not "N-1 once the default
+	// bed happens to exist".
+	if m.maxBeds > 0 && id != m.defaultBed {
+		n := len(m.beds)
+		if _, ok := m.beds[m.defaultBed]; ok {
+			n--
+		}
+		if n >= m.maxBeds {
+			return nil, ErrBedLimit
+		}
 	}
 	ws := filepath.Join(m.root, id)
 	if err := os.MkdirAll(ws, 0o755); err != nil {

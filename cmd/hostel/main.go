@@ -46,7 +46,7 @@ func main() {
 	// exist so Chromium/Jupyter drop in later without touching bed lifecycle.
 	services := service.NewRegistry()
 
-	mgr, err := bed.NewManager(cfg.WorkspaceRoot, cfg.DefaultBed, cfg.ShellPath, iso, services)
+	mgr, err := bed.NewManager(cfg.WorkspaceRoot, cfg.DefaultBed, cfg.ShellPath, iso, services, cfg.MaxBeds)
 	if err != nil {
 		log.Fatalf("hostel: init bed manager: %v", err)
 	}

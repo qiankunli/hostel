@@ -33,6 +33,7 @@ const (
 	ErrSessionNotFound    ErrorCode = "SESSION_NOT_FOUND"
 	ErrCommandNotFound    ErrorCode = "COMMAND_NOT_FOUND"
 	ErrBedInvalid         ErrorCode = "BED_INVALID"
+	ErrBedLimitExceeded   ErrorCode = "BED_LIMIT_EXCEEDED"
 	ErrServiceUnavailable ErrorCode = "SERVICE_UNAVAILABLE"
 )
 

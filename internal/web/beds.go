@@ -61,7 +61,7 @@ func (s *Server) bedCreate(c *gin.Context) {
 	}
 	b, err := s.mgr.Resolve(id)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, ErrBedInvalid, err.Error())
+		respondBedError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, bedView{ID: b.ID, Workspace: b.Workspace, CreatedAt: b.CreatedAt, LastUsed: b.LastUsed()})
@@ -100,6 +100,7 @@ func (s *Server) capabilities(c *gin.Context) {
 		// inside the sandbox (bwrap): shell paths == file-API paths. False
 		// under direct, where /workspace is only the file-API virtual prefix.
 		"workspace_mount":  iso.MountPoint() != "",
+		"max_beds":         s.mgr.MaxBeds(),
 		"files":            true,
 		"directories":      true,
 		"command":          true,

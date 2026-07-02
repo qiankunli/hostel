@@ -19,6 +19,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,16 @@ import (
 	"github.com/qiankunli/hostel/internal/bed"
 	"github.com/qiankunli/hostel/internal/fsops"
 )
+
+// respondBedError maps bed-resolution failures: a full instance is 429
+// backpressure (scheduler should place elsewhere), anything else is a bad id.
+func respondBedError(c *gin.Context, err error) {
+	if errors.Is(err, bed.ErrBedLimit) {
+		respondError(c, http.StatusTooManyRequests, ErrBedLimitExceeded, err.Error())
+		return
+	}
+	respondError(c, http.StatusBadRequest, ErrBedInvalid, err.Error())
+}
 
 // BedHeader carries the target bed id; empty → default bed.
 const BedHeader = "X-Hostel-Bed"
@@ -104,7 +115,7 @@ func (s *Server) bedOf(c *gin.Context) *bed.Bed {
 	}
 	b, err := s.mgr.Resolve(id)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, ErrBedInvalid, err.Error())
+		respondBedError(c, err)
 		return nil
 	}
 	return b
@@ -127,6 +138,7 @@ func (s *Server) healthz(c *gin.Context) {
 		"isolator_ok":     iso.Available(),
 		"workspace_mount": iso.MountPoint() != "",
 		"beds":            len(s.mgr.List()),
+		"max_beds":        s.mgr.MaxBeds(),
 		"default_bed":     s.mgr.DefaultBedID(),
 	})
 }

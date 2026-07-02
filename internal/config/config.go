@@ -40,6 +40,10 @@ type Config struct {
 	DefaultBed string
 	// BedIdleTimeout reaps a bed whose shell has been idle this long (0 = never).
 	BedIdleTimeout time.Duration
+	// MaxBeds caps how many beds may exist at once (0 = unlimited). Applies to
+	// NEW bed creation only, never to the default bed; the 429 it produces is
+	// the backpressure/placement signal for an upstream scheduler.
+	MaxBeds int
 	// ShellPath is the shell binary a bed's long-running session runs.
 	ShellPath string
 }
@@ -54,10 +58,20 @@ func Load(args []string) *Config {
 	fs.StringVar(&c.DefaultBed, "default-bed", envStr("HOSTEL_DEFAULT_BED", "default"), "bed id used when a request omits one")
 	fs.StringVar(&c.ShellPath, "shell", envStr("HOSTEL_SHELL", "/bin/bash"), "shell for bed sessions")
 	idle := fs.Duration("bed-idle-timeout", envDur("HOSTEL_BED_IDLE_TIMEOUT", 30*time.Minute), "reap a bed after this idle duration (0=never)")
+	fs.IntVar(&c.MaxBeds, "max-beds", envInt("HOSTEL_MAX_BEDS", 0), "max concurrent beds, 0=unlimited (default bed exempt)")
 	// Ignore parse errors for unknown flags in tests; flag prints usage itself.
 	_ = fs.Parse(args)
 	c.BedIdleTimeout = *idle
 	return c
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func envStr(key, def string) string {
