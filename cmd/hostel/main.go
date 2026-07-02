@@ -37,7 +37,7 @@ import (
 func main() {
 	cfg := config.Load(os.Args[1:])
 
-	iso := isolation.New(cfg.IsolationMode)
+	iso := isolation.New(cfg.IsolationMode, cfg.WorkspaceRoot)
 	if !iso.Available() {
 		log.Printf("hostel: isolator %q unavailable on this host — commands will run with reduced/no isolation", iso.Name())
 	}

@@ -17,42 +17,69 @@
 package isolation
 
 import (
+	"fmt"
+	"log"
+	"os"
 	"os/exec"
 )
 
-// bwrap confines each command under bubblewrap: new mount/pid/uts/ipc
-// namespaces, read-only root, the bed workspace bind-mounted rw. This is the
-// minimal v1 argv; the fuller OSEP-0013 stack (per-profile /tmp, seccomp memfd,
-// real setuid via setpriv, overlay upper) is ported incrementally from
-// OpenSandbox execd — see docs/weak-tier.md "hostel" roadmap.
+// bwrap confines each command under bubblewrap. Mount view per
+// docs/data-isolation.md: RO host root, sibling beds masked out of existence,
+// own workspace rw at the canonical /workspace, host user data and mounted
+// secrets masked, secret-looking env vars stripped.
 type bwrap struct {
-	path string
+	path      string   // bwrap binary (probed at boot)
+	root      string   // parent dir of all bed workspaces (masked in-sandbox)
+	maskPaths []string // existing sensitive host paths to mask (computed once)
 }
 
-func newBwrap() Isolator {
-	path, _ := exec.LookPath("bwrap")
-	return &bwrap{path: path}
-}
-
-func (b *bwrap) Name() string    { return "bwrap" }
-func (b *bwrap) Available() bool  { return b.path != "" }
-
-func (b *bwrap) Wrap(cmd *exec.Cmd, ws Workspace) error {
-	if b.path == "" {
-		// No bwrap on host — degrade to cwd pinning rather than fail the exec.
-		cmd.Dir = ws.Path
-		return nil
+// newBwrap probes bubblewrap at boot: binary present AND a minimal namespace
+// actually starts (binary-present-but-broken — e.g. unprivileged userns
+// disabled — must not count as isolated). On failure it falls back to direct
+// so the daemon still boots and /healthz reports the truth.
+// Probe pattern borrowed from OpenSandbox execd.
+func newBwrap(workspaceRoot string) Isolator {
+	path, err := exec.LookPath("bwrap")
+	if err != nil {
+		log.Printf("isolation: bwrap not found, falling back to direct (no isolation)")
+		return direct{}
 	}
-	argv := []string{
+	if err := bwrapSmoke(path); err != nil {
+		log.Printf("isolation: bwrap found but unusable (%v), falling back to direct", err)
+		return direct{}
+	}
+	var masks []string
+	for _, p := range defaultMaskCandidates {
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			masks = append(masks, p)
+		}
+	}
+	return &bwrap{path: path, root: workspaceRoot, maskPaths: masks}
+}
+
+// bwrapSmoke verifies bwrap can create the namespaces we ask for.
+func bwrapSmoke(path string) error {
+	cmd := exec.Command(path,
 		"--unshare-pid", "--unshare-uts", "--unshare-ipc",
 		"--ro-bind", "/", "/",
-		"--dev", "/dev",
 		"--proc", "/proc",
-		"--tmpfs", "/tmp",
-		"--bind", ws.Path, ws.Path,
-		"--chdir", ws.Path,
-		"--",
+		"--", "true",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("smoke test: %w (%s)", err, out)
 	}
+	return nil
+}
+
+func (b *bwrap) Name() string       { return "bwrap" }
+func (b *bwrap) Available() bool    { return true } // probed at construction
+func (b *bwrap) MountPoint() string { return BwrapMountPoint }
+
+func (b *bwrap) Wrap(cmd *exec.Cmd, ws Workspace) error {
+	// No silent degradation past this point: this isolator passed the boot
+	// probe, so any failure to build the sandbox is a hard error.
+	argv := buildBwrapArgs(b.root, ws.Path, b.maskPaths, os.Environ())
 	userArgs := cmd.Args
 	cmd.Args = make([]string, 0, len(argv)+len(userArgs)+1)
 	cmd.Args = append(cmd.Args, b.path)

@@ -18,11 +18,15 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/qiankunli/hostel/internal/bed"
 	"github.com/qiankunli/hostel/internal/fsops"
 )
 
@@ -37,9 +41,13 @@ type RunCommandRequest struct {
 	Envs       map[string]string `json:"envs,omitempty"`
 }
 
-// resolveCwd maps a client cwd (virtual /workspace path) to a host dir, or ""
-// when unset. Returns false (after writing an error) on an invalid path.
-func resolveCwd(c *gin.Context, ops *fsops.Ops, cwd string) (string, bool) {
+// resolveCwd maps a client cwd (virtual /workspace path) to the directory the
+// bed's SHELL should cd into, or "" when unset. Under direct that's the host
+// dir; under bwrap the workspace is mounted at the canonical mount point, so
+// the shell needs the in-sandbox path (the host dir doesn't exist in its mount
+// namespace). Validation (escape rejection) is fsops.Resolve either way.
+// Returns false (after writing an error) on an invalid path.
+func (s *Server) resolveCwd(c *gin.Context, b *bed.Bed, ops *fsops.Ops, cwd string) (string, bool) {
 	if cwd == "" {
 		return "", true
 	}
@@ -48,7 +56,17 @@ func resolveCwd(c *gin.Context, ops *fsops.Ops, cwd string) (string, bool) {
 		badRequest(c, err.Error())
 		return "", false
 	}
-	return host, true
+	mp := s.mgr.Isolator().MountPoint()
+	if mp == "" {
+		return host, true
+	}
+	rel, err := filepath.Rel(b.Workspace, host)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		// Unreachable after ops.Resolve confinement; refuse rather than guess.
+		badRequest(c, "cwd outside the bed workspace")
+		return "", false
+	}
+	return path.Join(mp, filepath.ToSlash(rel)), true
 }
 
 // POST /command — SSE stream. Foreground runs in the bed's shared stateful
@@ -67,7 +85,7 @@ func (s *Server) runCommand(c *gin.Context) {
 		badRequest(c, "missing 'command'")
 		return
 	}
-	hostCwd, ok := resolveCwd(c, ops, req.Cwd)
+	hostCwd, ok := s.resolveCwd(c, b, ops, req.Cwd)
 	if !ok {
 		return
 	}
@@ -213,7 +231,7 @@ func (s *Server) sessionCreate(c *gin.Context) {
 	}
 	var req createSessionRequest
 	_ = c.ShouldBindJSON(&req)
-	hostCwd, ok := resolveCwd(c, ops, req.Cwd)
+	hostCwd, ok := s.resolveCwd(c, b, ops, req.Cwd)
 	if !ok {
 		return
 	}
@@ -245,7 +263,7 @@ func (s *Server) sessionRun(c *gin.Context) {
 		badRequest(c, "missing 'command'")
 		return
 	}
-	hostCwd, ok := resolveCwd(c, ops, req.Cwd)
+	hostCwd, ok := s.resolveCwd(c, b, ops, req.Cwd)
 	if !ok {
 		return
 	}

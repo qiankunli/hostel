@@ -94,8 +94,12 @@ func (s *Server) capabilities(c *gin.Context) {
 		svcNames = append(svcNames, sv.Name())
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"isolator":         iso.Name(),
-		"isolator_ok":      iso.Available(),
+		"isolator":    iso.Name(),
+		"isolator_ok": iso.Available(),
+		// True when the bed workspace is mounted at the canonical /workspace
+		// inside the sandbox (bwrap): shell paths == file-API paths. False
+		// under direct, where /workspace is only the file-API virtual prefix.
+		"workspace_mount":  iso.MountPoint() != "",
 		"files":            true,
 		"directories":      true,
 		"command":          true,

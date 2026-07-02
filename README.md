@@ -67,15 +67,20 @@ curl -s 'localhost:44772/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: con
 Path semantics: clients address files under the virtual prefix `/workspace`;
 hostel rebases that onto the bed's workspace directory. Relative paths are
 workspace-relative. Absolute paths outside the prefix are rejected — a bed never
-sees the host. (Note: `/workspace` is a **file-API** convenience; shell commands
-run with the bed's real workspace as cwd and use real/relative paths in v1.)
+sees the host. Under `bwrap` the workspace is also *really mounted* at
+`/workspace` inside the sandbox, so shell paths and file-API paths are the same
+string; under `direct` (no mount namespace) the shell cwd is the host dir.
+Probe the `workspace_mount` capability to tell the two apart.
 
 ## Isolation
 
 - `direct` (default, all platforms): only chdir into the workspace, no isolation
   — for dev / fully-trusted single-tenant use;
-- `bwrap` (Linux): mount/pid/uts/ipc namespaces + read-only root + workspace
-  bind; falls back to direct on non-Linux.
+- `bwrap` (Linux): mount/pid/uts/ipc namespaces + read-only root; sibling beds
+  are masked out of existence (tmpfs over the workspace root), the bed's own
+  workspace is mounted rw at `/workspace`, host user data and mounted secrets
+  are masked, and secret-looking env vars are stripped. Probed at boot; falls
+  back to direct (honestly reported) when unusable.
 
 Stronger isolation (real setuid, seccomp, per-bed CPU/memory limits via cgroups,
 copy-on-write overlay workspaces, PTY over WebSocket) is on the roadmap.

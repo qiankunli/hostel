@@ -29,9 +29,10 @@ bwrap --unshare-pid --unshare-uts --unshare-ipc \
   --ro-bind / / \
   --dev /dev --proc /proc --tmpfs /tmp \
   --tmpfs <workspace-root> \            # 遮蔽所有 bed 目录
-  --tmpfs /root --tmpfs /home \         # 遮蔽宿主用户数据
+  --tmpfs /root --tmpfs /home \         # 遮蔽宿主用户数据（及存在时的 /run/secrets、/var/run/secrets）
   --bind <workspace-root>/<bedID> /workspace \  # 只挂自己，且给规范名
-  --chdir /workspace -- <cmd>
+  --unsetenv <密钥形 env>... \           # 见 §4：宿主凭据不进 bed
+  --chdir /workspace --die-with-parent -- <cmd>
 ```
 
 顺序敏感：`--tmpfs <workspace-root>` 必须在 `--ro-bind / /` 之后（后挂的盖前面的），`--bind ... /workspace` 与遮蔽无冲突（挂载点不同）。
@@ -56,9 +57,11 @@ bind 目标从"宿主原位路径"改为 bed 内固定的 `/workspace`：
 
 注意 workspace-root 与规范挂载点重名时（宿主 `/workspace` 作 root、bed 内也叫 `/workspace`）bwrap 序列依然成立：先 tmpfs 盖 `/workspace`，再 bind `<root>/<bedID>` → `/workspace`，自身目录作为挂载点被替换、兄弟目录被 tmpfs 吞掉。
 
-### 4. 敏感路径遮蔽清单
+### 4. 敏感数据遮蔽清单：文件路径 + 环境变量
 
-最小集合：`/root`、`/home`（宿主用户数据）。可选追加（按部署形态）：hostel 自身二进制/配置目录一般在 RO 根下无害；含密钥的路径（如 `/var/run/secrets`，K8s serviceaccount token）**默认遮蔽**，需要访问网络凭据的场景由 managed-service 层代持，而不是把凭据暴露给 bed 内任意代码。
+文件路径最小集合：`/root`、`/home`（宿主用户数据）+ 存在时的 `/run/secrets`、`/var/run/secrets`（K8s serviceaccount token 等平台挂载凭据）——**默认遮蔽**，需要网络凭据的场景由 managed-service 层代持，而不是把凭据暴露给 bed 内任意代码。
+
+环境变量同理（借鉴 execd strict profile 的黑名单）：hostel 进程自身 env 里密钥形变量（`*_API_KEY` / `*_TOKEN` / `*_SECRET` / `*_PASSWORD` / `AWS_*` / `K8S_*` / `KUBE_*`）经 `--unsetenv` 剥除后才进 bed。文件遮蔽挡"挂载进来的凭据"，env 剥除挡"进程继承的凭据"，两条泄漏通道都要关。
 
 ### 5. 降级行为（与 v1 一致的哲学）
 
@@ -67,7 +70,7 @@ bind 目标从"宿主原位路径"改为 bed 内固定的 `/workspace`：
 
 ### 6. 测试策略
 
-- **mac/CI 可跑**：argv 构造单测——给定 root/bedID，断言遮蔽序列、bind 目标、顺序敏感项。
+- **mac/CI 可跑**：argv 构造单测——给定 root/bedID，断言遮蔽序列、bind 目标、顺序敏感项、env 剥除（argv 构造放在无 build tag 的 `bwrap_args.go`，exec 侧才是 `bwrap_linux.go`）。
 - **Linux 真验证**（devbox）：起两个 bed，A 写文件，断言 B 内 `ls <workspace-root>` 看不到 A 的目录、`cat` A 的宿主路径报不存在；`/workspace` 内读写互通 file API。
 - 回归：direct 模式行为不变（现有 web/bed 测试全绿）。
 
@@ -77,3 +80,7 @@ bind 目标从"宿主原位路径"改为 bed 内固定的 `/workspace`：
 - seccomp / 真 setuid / userns（安全纵深）——单独设计；
 - overlay CoW 临时层——与持久化（`persistence.md`）合并考虑；
 - 跨 pod 实时共享 workspace——见 `persistence.md` 的诚实边界。
+
+## 实现状态
+
+已实现（`internal/isolation/`）：boot 时 bwrap probe（binary + namespace smoke test，借鉴 execd）、遮蔽 argv、`/workspace` 规范挂载、cwd 模式感知映射（`web` 层 `resolveCwd`）、env 剥除、capabilities/healthz 报 `workspace_mount`。mac argv 单测绿；**Linux 真机双 bed 验证待跑**（devbox）。
