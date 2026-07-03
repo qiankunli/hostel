@@ -72,14 +72,17 @@ type Store interface {
 
 // Config selects and parameterizes the backend (flags/env in config package).
 type Config struct {
-	Backend  string // "noop" (default) | "s3"
+	Backend  string // "noop" (default) | "s3" | "cas"
 	Bucket   string
 	Prefix   string // key prefix inside the bucket, e.g. "hostel/prod"
 	Endpoint string // non-AWS S3-compatible endpoint (MinIO/TOS/Ceph); "" = AWS
 }
 
-// New builds the configured backend. noop needs nothing; s3 resolves
-// credentials via the standard AWS SDK chain (env, shared config, IRSA...).
+// New builds the configured backend. noop needs nothing; s3 (tarball per
+// bed) and cas (content-addressed chunks, incremental transfer) both talk to
+// S3-compatible storage and resolve credentials via the standard AWS SDK
+// chain (env, shared config, IRSA...). The two layouts don't read each
+// other's snapshots — switching backends does not migrate existing beds.
 func New(ctx context.Context, cfg Config) (Store, error) {
 	switch cfg.Backend {
 	case "", "noop":
@@ -89,6 +92,11 @@ func New(ctx context.Context, cfg Config) (Store, error) {
 			return nil, fmt.Errorf("store: s3 backend requires a bucket")
 		}
 		return newS3(ctx, cfg)
+	case "cas":
+		if cfg.Bucket == "" {
+			return nil, fmt.Errorf("store: cas backend requires a bucket")
+		}
+		return newCAS(ctx, cfg)
 	default:
 		return nil, fmt.Errorf("store: unknown backend %q", cfg.Backend)
 	}

@@ -136,6 +136,10 @@ Persistence: with `--store s3` each bed's workspace is snapshotted to
 when the bed is created again, persisted on evict (DELETE / idle reap) or
 explicit checkpoint, plus an optional `--persist-interval` safety net. A bed's
 durable identity is the snapshot; the local dir is just its working copy.
+`--store cas` keeps the same semantics but transfers incrementally: the
+workspace is CDC-chunked (via desync) and only chunks new since the bed's
+previous snapshot are uploaded — an unchanged workspace re-persists with zero
+uploads. The two layouts don't read each other's snapshots.
 `DELETE /v1/beds/:id` evicts (identity kept); add `?purge=true` to also delete
 the snapshot and end the identity. An evict raced by live traffic returns
 `409 BED_BUSY` instead of dropping mid-flight writes.
