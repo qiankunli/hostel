@@ -71,9 +71,11 @@ COPY --from=builder /out/hostel /usr/local/bin/hostel
 ENV HOSTEL_WORKSPACE_ROOT=/workspace \
     HOSTEL_ISOLATION=suite \
     HOSTEL_CHROMIUM_PATH=/usr/bin/chromium
-# Persist beds across container restarts when no object store is configured
-# (with --store s3 the workspace is just a disposable working copy).
-VOLUME ["/workspace"]
+# No VOLUME: it would bake the default path in at build time and silently
+# stop applying when HOSTEL_WORKSPACE_ROOT is overridden. To keep beds across
+# container restarts without an object store, mount a volume at the workspace
+# root yourself (-v beds:/workspace); with --store s3 the local workspace is
+# just a disposable working copy.
 EXPOSE 8872
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \

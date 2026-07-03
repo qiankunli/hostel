@@ -32,8 +32,12 @@ import (
 	"time"
 )
 
-// VirtualPrefix is where a bed's workspace appears to clients. Kept as the
-// OpenSandbox convention so SDK calls (`/workspace/...`) work unchanged.
+// VirtualPrefix is where a bed's workspace appears to clients. This is the
+// OpenSandbox SDK contract — clients hardcode `/workspace/...` — so it is
+// deliberately NOT configurable (unlike the host-side workspace root).
+// Must stay equal to isolation.BwrapMountPoint: that constant is the same
+// contract seen from the shell side, and the two packages don't import each
+// other, so nothing but this comment ties them together.
 const VirtualPrefix = "/workspace"
 
 // FileInfo mirrors the OpenSandbox execd file metadata shape so existing SDKs
