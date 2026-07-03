@@ -73,10 +73,69 @@ type Permission struct {
 }
 
 // Ops is rooted at one bed's workspace.
-type Ops struct{ root string }
+type Ops struct {
+	root string
+	// uid/gid of the workspace dir when it differs from the daemon's euid
+	// (uid-isolated beds), else -1. Mechanism-independent invariant: whatever
+	// lands in a bed's workspace belongs to the bed — fsops runs as the
+	// daemon, so without this, file-API writes would leave daemon-owned files
+	// the bed can read but not modify (docs/data-isolation.md, room/uid).
+	uid, gid int
+}
 
 // New returns file ops confined to root (the bed workspace host dir).
-func New(root string) *Ops { return &Ops{root: root} }
+func New(root string) *Ops {
+	o := &Ops{root: root, uid: -1, gid: -1}
+	if fi, err := os.Lstat(root); err == nil {
+		if uid, gid, ok := ownerOf(fi); ok && uid != os.Geteuid() {
+			o.uid, o.gid = uid, gid
+		}
+	}
+	return o
+}
+
+// chownNew hands a path fsops just created over to the workspace owner.
+// Best-effort: if the daemon lacks CAP_CHOWN the file stays daemon-owned,
+// which is the pre-invariant behavior (bed reads it, next Prepare re-chowns).
+// Same hardlink discipline as isolation's chownTree: a multiply-linked file is
+// a second name for an inode possibly outside the workspace — rehoming it
+// would gift the bed ownership of a host file, so leave it alone. Lchown so a
+// symlink planted at the path can't redirect the chown to its referent.
+func (o *Ops) chownNew(full string) {
+	if o.uid < 0 {
+		return
+	}
+	fi, err := os.Lstat(full)
+	if err != nil {
+		return
+	}
+	if fi.Mode().IsRegular() && nlinkOf(fi) > 1 {
+		return
+	}
+	_ = os.Lchown(full, o.uid, o.gid)
+}
+
+// mkdirAllOwned is MkdirAll + chownNew on every directory it actually created
+// (pre-existing ancestors keep their owner).
+func (o *Ops) mkdirAllOwned(dir string) error {
+	if o.uid < 0 {
+		return os.MkdirAll(dir, 0o755)
+	}
+	var created []string
+	for d := dir; strings.HasPrefix(d, o.root); d = filepath.Dir(d) {
+		if _, err := os.Lstat(d); err == nil {
+			break
+		}
+		created = append(created, d)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, d := range created {
+		o.chownNew(d)
+	}
+	return nil
+}
 
 // Resolve maps a client path to a host path under the workspace, rejecting
 // escapes. Exported for exec cwd resolution.
@@ -181,14 +240,18 @@ func (o *Ops) Write(p string, data []byte, mode int) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	if err := o.mkdirAllOwned(filepath.Dir(full)); err != nil {
 		return err
 	}
 	fm := os.FileMode(0o644)
 	if mode != 0 {
 		fm = os.FileMode(mode) & os.ModePerm
 	}
-	return os.WriteFile(full, data, fm)
+	if err := os.WriteFile(full, data, fm); err != nil {
+		return err
+	}
+	o.chownNew(full)
+	return nil
 }
 
 // Remove deletes files (not directories); missing files are ignored.
@@ -225,7 +288,7 @@ func (o *Ops) Rename(src, dest string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(d), 0o755); err != nil {
+	if err := o.mkdirAllOwned(filepath.Dir(d)); err != nil {
 		return err
 	}
 	return os.Rename(s, d)
@@ -277,7 +340,7 @@ func (o *Ops) MakeDir(p string) error {
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(full, 0o755)
+	return o.mkdirAllOwned(full)
 }
 
 // RemoveDir removes a directory tree.
