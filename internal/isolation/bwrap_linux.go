@@ -40,9 +40,9 @@ type bwrap struct {
 // while every exec failed). On failure it falls back to direct so the daemon
 // still boots and /healthz reports the truth.
 // Probe pattern borrowed from OpenSandbox execd, extended to the real argv.
-func newBwrap(workspaceRoot string) Isolator {
-	path, err := exec.LookPath("bwrap")
-	if err != nil {
+func newBwrap(facts HostFacts, workspaceRoot string) Isolator {
+	path := facts.BwrapPath
+	if path == "" {
 		return unavailable{name: "bwrap", lvl: Suite}
 	}
 

@@ -16,14 +16,8 @@
 
 package isolation
 
-import "fmt"
-
-// AsUserArg exists on all platforms so main can dispatch it uniformly.
-const AsUserArg = "__asuser"
-
-// newUID: uid isolation relies on Linux setuid/setgid + /proc caps. Report room
-// as unavailable elsewhere.
-func newUID(HostFacts, string) Isolator { return unavailable{name: "uid", lvl: Room} }
-
-// ApplyAsUser should never run off Linux (no uid isolator can be chosen).
-func ApplyAsUser(int, string) error { return fmt.Errorf("uid isolation: unsupported on this platform") }
+// osFacts: the Linux-only probes (caps, Landlock, userns, cgroup) are all
+// absent off Linux; only collectHostFacts's cross-platform bwrap lookup may set
+// anything. Room/suite mechanisms then report unavailable and the resolver
+// floors to dorm.
+func osFacts() HostFacts { return HostFacts{} }

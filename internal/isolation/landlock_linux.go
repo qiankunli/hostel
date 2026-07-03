@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
-	lls "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
 
 // ConfineArg is the hidden subcommand hostel re-execs into to apply Landlock
@@ -43,10 +42,11 @@ type landlock struct {
 	self string // hostel binary path, re-execed as the confiner
 }
 
-func newLandlock(workspaceRoot string) Isolator {
-	// Probe: Landlock ABI ≥ 1 means the kernel exposes filesystem restrictions
-	// (a custom kernel without CONFIG_SECURITY_LANDLOCK fails right here).
-	if v, err := lls.LandlockGetABIVersion(); err != nil || v < 1 {
+func newLandlock(facts HostFacts, workspaceRoot string) Isolator {
+	// Landlock ABI ≥ 1 means the kernel exposes filesystem restrictions (a custom
+	// kernel without CONFIG_SECURITY_LANDLOCK reports 0 — the boot probe already
+	// established this fact, no need to re-syscall here).
+	if facts.LandlockABI < 1 {
 		return unavailable{name: "landlock", lvl: Room}
 	}
 	self, err := os.Executable()

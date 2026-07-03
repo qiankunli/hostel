@@ -93,12 +93,14 @@ type Isolator interface {
 	Wrap(cmd *exec.Cmd, ws Workspace) error
 }
 
-// Report is the boot-time resolution, exposed for capabilities/healthz.
+// Report is the boot-time resolution, exposed for capabilities/healthz: the
+// resolution outcome plus the host facts it was resolved from.
 type Report interface {
 	Requested() Level
 	Effective() Level
 	Ceiling() Level
 	Mechanism() string
+	Facts() HostFacts
 }
 
 // Preparer is an optional Isolator capability: a mechanism that must prepare a
@@ -115,12 +117,14 @@ type Preparer interface {
 type resolved struct {
 	Isolator
 	req, eff, ceil Level
+	facts          HostFacts
 }
 
 func (r *resolved) Requested() Level  { return r.req }
 func (r *resolved) Effective() Level  { return r.eff }
 func (r *resolved) Ceiling() Level    { return r.ceil }
 func (r *resolved) Mechanism() string { return r.Isolator.Name() }
+func (r *resolved) Facts() HostFacts  { return r.facts }
 
 // Prepare forwards to the chosen mechanism when it needs data-dir preparation
 // (uid), else no-ops — so the bed manager can assert Preparer on the result
@@ -139,16 +143,20 @@ func (r *resolved) Prepare(ws Workspace) error {
 func New(requested, workspaceRoot string) Isolator {
 	req := parseRequest(requested)
 
+	// One host probe shared by every mechanism (see HostFacts): they read it for
+	// the cheap pre-check and keep their own boot smoke for the verdict.
+	facts := collectHostFacts()
+
 	// Candidate mechanisms, strongest first; within a level, preferred first
 	// (the selection below keeps the first available at each level). direct
 	// (dorm) is the always-available floor. Two mechanisms serve room: landlock
 	// (kernel LSM, no privilege — preferred) and uid (Unix DAC, needs setuid
 	// caps — the fallback where Landlock is absent, e.g. old/custom kernels).
 	candidates := []Isolator{
-		newBwrap(workspaceRoot),    // suite
-		newLandlock(workspaceRoot), // room — preferred
-		newUID(workspaceRoot),      // room — fallback
-		direct{},                   // dorm
+		newBwrap(facts, workspaceRoot),    // suite
+		newLandlock(facts, workspaceRoot), // room — preferred
+		newUID(facts, workspaceRoot),      // room — fallback
+		direct{},                          // dorm
 	}
 
 	ceiling := Dorm
@@ -177,7 +185,7 @@ func New(requested, workspaceRoot string) Isolator {
 		log.Printf("isolation: level=%s mechanism=%s (requested=%s, ceiling=%s)",
 			eff, chosen.Name(), req, ceiling)
 	}
-	return &resolved{Isolator: chosen, req: req, eff: eff, ceil: ceiling}
+	return &resolved{Isolator: chosen, req: req, eff: eff, ceil: ceiling, facts: facts}
 }
 
 // unavailable is a mechanism that probed as not usable on this host. It keeps
