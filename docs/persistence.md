@@ -35,7 +35,7 @@ type Store interface {
 }
 ```
 
-backend：`noop`（默认，laptop 零依赖）· `tarball`（整包，`s3` 为遗留别名）· `cas`（内容寻址增量，见 §3）。**取值命名的是快照布局，不是传输后端**——tarball 和 cas 都走同一套 S3 兼容 API（AWS / MinIO / 火山 TOS / Ceph），共用配置：`--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint`（creds 走 AWS SDK 标准环境链）/ `--persist-on-idle` / `--persist-interval`。
+backend：`auto`（默认）· `noop`（laptop 零依赖）· `tarball`（整包，`s3` 为遗留别名）· `cas`（内容寻址增量，见 §3）。**取值命名的是快照布局，不是传输后端**——tarball 和 cas 都走同一套 S3 兼容 API（AWS / MinIO / 火山 TOS / Ceph），共用配置：`--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint`（creds 走 AWS SDK 标准环境链）/ `--persist-on-idle` / `--persist-interval`。**`auto` 按意图解析**：配了 bucket = 想要持久化 → 选 cas（增量 + no-op 短路 + 读时校验，S3 场景的首选布局）；没配 bucket → noop。这同时封掉"配了 bucket 但忘了 `--store` → 静默不持久化"的误配。tarball 是显式后备：最简布局（一 bed 一对象，restore 单 GET），适合调试和最小依赖场景。
 
 ### 2. persist 触发：边界同步，不每写必传
 

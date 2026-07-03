@@ -51,7 +51,8 @@ type Config struct {
 	// the backpressure/placement signal for an upstream scheduler.
 	MaxBeds int
 
-	// Workspace persistence (docs/persistence.md). Backend "noop" disables;
+	// Workspace persistence (docs/persistence.md). Backend "auto" (default)
+	// resolves to "cas" when a bucket is configured and "noop" otherwise;
 	// "tarball" snapshots each bed to <bucket>/<prefix>/<bedID>.tar.gz at
 	// lifecycle boundaries; "cas" stores content-addressed chunks under
 	// <prefix>/cas/ and transfers incrementally. Values name the snapshot
@@ -95,7 +96,7 @@ func Load(args []string) *Config {
 	fs.StringVar(&c.ShellPath, "shell", envStr("HOSTEL_SHELL", "/bin/bash"), "shell for bed sessions")
 	idle := fs.Duration("bed-idle-timeout", envDur("HOSTEL_BED_IDLE_TIMEOUT", 30*time.Minute), "reap a bed after this idle duration (0=never)")
 	fs.IntVar(&c.MaxBeds, "max-beds", envInt("HOSTEL_MAX_BEDS", 0), "max concurrent beds, 0=unlimited (default bed exempt)")
-	fs.StringVar(&c.StoreBackend, "store", envStr("HOSTEL_STORE", "noop"), "workspace persistence backend: noop | tarball | cas (incremental chunks); tarball and cas are S3-backed layouts")
+	fs.StringVar(&c.StoreBackend, "store", envStr("HOSTEL_STORE", "auto"), "workspace persistence backend: auto (cas when --s3-bucket is set, else noop) | noop | tarball | cas; tarball and cas are S3-backed layouts")
 	fs.StringVar(&c.S3Bucket, "s3-bucket", envStr("HOSTEL_S3_BUCKET", ""), "S3 bucket for bed snapshots (store=tarball | cas)")
 	fs.StringVar(&c.S3Prefix, "s3-prefix", envStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")
 	fs.StringVar(&c.S3Endpoint, "s3-endpoint", envStr("HOSTEL_S3_ENDPOINT", ""), "S3-compatible endpoint (empty = AWS)")

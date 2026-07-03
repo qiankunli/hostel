@@ -109,6 +109,13 @@ func TestNoopStore(t *testing.T) {
 			t.Fatalf("%s without bucket should fail", backend)
 		}
 	}
+	// auto resolves by intent: bucket set → cas, no bucket → noop.
+	if st, err := New(t.Context(), Config{Backend: "auto"}); err != nil || st.Name() != "noop" {
+		t.Fatalf("auto without bucket = %v, %v; want noop", st, err)
+	}
+	if st, err := New(t.Context(), Config{Backend: "auto", Bucket: "b"}); err != nil || st.Name() != "cas" {
+		t.Fatalf("auto with bucket = %v, %v; want cas", st, err)
+	}
 	if _, err := New(t.Context(), Config{Backend: "bogus"}); err == nil {
 		t.Fatal("unknown backend should fail")
 	}

@@ -131,15 +131,16 @@ Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
 `--luggage-high-bytes` / `--luggage-low-bytes` /
 `--chromium-path` / `--chromium-cdp-url` / `--chromium-idle-stop`.
 
-Persistence: with `--store tarball` (legacy alias: `s3`) each bed's workspace is snapshotted to
-`s3://<bucket>/<prefix>/<bedID>.tar.gz` (any S3-compatible endpoint) — restored
-when the bed is created again, persisted on evict (DELETE / idle reap) or
-explicit checkpoint, plus an optional `--persist-interval` safety net. A bed's
-durable identity is the snapshot; the local dir is just its working copy.
-`--store cas` keeps the same semantics but transfers incrementally: the
+Persistence: setting `--s3-bucket` (any S3-compatible endpoint) turns it on —
+the default `--store auto` then picks `cas`, the incremental layout: the
 workspace is CDC-chunked (via desync) and only chunks new since the bed's
-previous snapshot are uploaded — an unchanged workspace re-persists with zero
-uploads. The two layouts don't read each other's snapshots.
+previous snapshot are uploaded, so an unchanged workspace re-persists with
+zero uploads. Snapshots restore when the bed is created again and persist on
+evict (DELETE / idle reap) or explicit checkpoint, plus an optional
+`--persist-interval` safety net. A bed's durable identity is the snapshot; the
+local dir is just its working copy. `--store tarball` (legacy alias: `s3`) is
+the explicit fallback layout — one `<prefix>/<bedID>.tar.gz` per bed, full
+re-upload each persist. The two layouts don't read each other's snapshots.
 `DELETE /v1/beds/:id` evicts (identity kept); add `?purge=true` to also delete
 the snapshot and end the identity. An evict raced by live traffic returns
 `409 BED_BUSY` instead of dropping mid-flight writes.

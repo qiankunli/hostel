@@ -73,7 +73,7 @@ type Store interface {
 
 // Config selects and parameterizes the backend (flags/env in config package).
 type Config struct {
-	Backend  string // "noop" (default) | "tarball" ("s3" accepted as alias) | "cas"
+	Backend  string // "auto" (default) | "noop" | "tarball" ("s3" accepted as alias) | "cas"
 	Bucket   string
 	Prefix   string // key prefix inside the bucket, e.g. "hostel/prod"
 	Endpoint string // non-AWS S3-compatible endpoint (MinIO/TOS/Ceph); "" = AWS
@@ -86,9 +86,21 @@ type Config struct {
 // chain (env, shared config, IRSA...). "s3" is kept as a legacy alias for
 // tarball. The two layouts don't read each other's snapshots — switching
 // backends does not migrate existing beds.
+//
+// "auto" (the default) resolves by intent: a configured bucket means the
+// deployment wants persistence, and cas is the preferred layout (incremental
+// transfer, no-op short-circuit, verified reads); no bucket means noop. This
+// also closes the "--s3-bucket set but --store forgotten → silently noop"
+// misconfiguration. tarball remains the explicit choice for the simplest
+// possible layout (one object per bed, restore is a single GET).
 func New(ctx context.Context, cfg Config) (Store, error) {
 	switch cfg.Backend {
-	case "", "noop":
+	case "", "auto":
+		if cfg.Bucket != "" {
+			return newCAS(ctx, cfg)
+		}
+		return Noop{}, nil
+	case "noop":
 		return Noop{}, nil
 	case "tarball", "s3":
 		if cfg.Bucket == "" {
