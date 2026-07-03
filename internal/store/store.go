@@ -47,10 +47,9 @@ type SnapshotInfo struct {
 
 // Store is the persistence backend for bed workspaces. Implementations must
 // treat Persist as atomic per bed (a reader never sees a half-written
-// snapshot) — the tarball-per-bed layout gives this for free on S3.
+// snapshot) — a single commit-point object per bed gives this on S3.
 type Store interface {
-	// Name reports the backend for capabilities/healthz ("noop", "tarball",
-	// "cas").
+	// Name reports the backend for capabilities/healthz ("noop", "s3").
 	Name() string
 	// Stat describes the bed's snapshot, or nil when none exists. Must be
 	// cheap (S3: HEAD + user metadata, no download) — luggage freshness
@@ -73,26 +72,25 @@ type Store interface {
 
 // Config selects and parameterizes the backend (flags/env in config package).
 type Config struct {
-	Backend  string // "auto" (default) | "noop" | "tarball" ("s3" accepted as alias) | "cas"
+	Backend  string // "auto" (default) | "noop" | "s3" ("cas" accepted as alias)
 	Bucket   string
 	Prefix   string // key prefix inside the bucket, e.g. "hostel/prod"
 	Endpoint string // non-AWS S3-compatible endpoint (MinIO/TOS/Ceph); "" = AWS
 }
 
-// New builds the configured backend. Backend values name the snapshot
-// LAYOUT, not the transport: tarball (one tar.gz per bed) and cas
-// (content-addressed chunks, incremental transfer) both talk to the same
-// S3-compatible storage and resolve credentials via the standard AWS SDK
-// chain (env, shared config, IRSA...). "s3" is kept as a legacy alias for
-// tarball. The two layouts don't read each other's snapshots — switching
-// backends does not migrate existing beds.
+// New builds the configured backend. "s3" is the one S3-backed layout:
+// content-addressed chunks with incremental transfer (cas.go; "cas" accepted
+// as an alias). Credentials resolve via the standard AWS SDK chain (env,
+// shared config, IRSA...).
 //
 // "auto" (the default) resolves by intent: a configured bucket means the
-// deployment wants persistence, and cas is the preferred layout (incremental
-// transfer, no-op short-circuit, verified reads); no bucket means noop. This
-// also closes the "--s3-bucket set but --store forgotten → silently noop"
-// misconfiguration. tarball remains the explicit choice for the simplest
-// possible layout (one object per bed, restore is a single GET).
+// deployment wants persistence; no bucket means noop. This closes the
+// "--s3-bucket set but --store forgotten → silently noop" misconfiguration.
+//
+// History: up to v0.0.1 "s3" named a tarball-per-bed layout, removed once cas
+// proved out (one layout to maintain; cas wins on transfer, no-op persist and
+// verified reads). Pre-v0.0.2 tarball snapshots are not readable by cas —
+// dropped without migration while hostel has no real deployments.
 func New(ctx context.Context, cfg Config) (Store, error) {
 	switch cfg.Backend {
 	case "", "auto":
@@ -102,14 +100,9 @@ func New(ctx context.Context, cfg Config) (Store, error) {
 		return Noop{}, nil
 	case "noop":
 		return Noop{}, nil
-	case "tarball", "s3":
+	case "s3", "cas":
 		if cfg.Bucket == "" {
-			return nil, fmt.Errorf("store: tarball backend requires a bucket")
-		}
-		return newS3(ctx, cfg)
-	case "cas":
-		if cfg.Bucket == "" {
-			return nil, fmt.Errorf("store: cas backend requires a bucket")
+			return nil, fmt.Errorf("store: s3 backend requires a bucket")
 		}
 		return newCAS(ctx, cfg)
 	default:
