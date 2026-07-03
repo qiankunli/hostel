@@ -42,7 +42,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # --- runtime stage --------------------------------------------------------
 # Debian (not distroless/alpine) because the optional facilities need a real
-# base: bubblewrap for --isolation bwrap, chromium for the browser amenity.
+# base: bubblewrap for --isolation suite, chromium for the browser amenity.
 # Both stay OPTIONAL at runtime — hostel probes them at boot and degrades
 # honestly, so a locked-down pod without namespaces still serves. No --platform
 # here: this stage IS the target platform, so apt installs the correct arch.
@@ -69,7 +69,7 @@ COPY --from=builder /out/hostel /usr/local/bin/hostel
 
 # Sensible in-container defaults; every one is overridable via HOSTEL_* env.
 ENV HOSTEL_WORKSPACE_ROOT=/workspace \
-    HOSTEL_ISOLATION=bwrap \
+    HOSTEL_ISOLATION=suite \
     HOSTEL_CHROMIUM_PATH=/usr/bin/chromium
 # Persist beds across container restarts when no object store is configured
 # (with --store s3 the workspace is just a disposable working copy).

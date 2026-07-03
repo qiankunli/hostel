@@ -40,7 +40,7 @@ microVM or a dedicated VM/container).
 
 ```bash
 make build
-./bin/hostel --isolation direct --workspace-root ./.workspace --addr :8872
+./bin/hostel --isolation dorm --workspace-root ./.workspace --addr :8872
 
 curl -s localhost:8872/ping                                   # pong
 curl -s localhost:8872/healthz | jq
@@ -75,8 +75,6 @@ Probe the `workspace_mount` capability to tell the two apart.
 
 ## Isolation
 
-- `direct` (default, all platforms): only chdir into the workspace, no isolation
-  — for dev / fully-trusted single-tenant use;
 Data isolation is graded by **hostel room type**: `--isolation
 dorm|room|suite|auto` (default `auto` = the environment ceiling). The effective
 level is `min(requested, ceiling)` — an over-ask degrades honestly, a lower ask
@@ -162,7 +160,7 @@ capabilities endpoint.
 
 `build/Dockerfile` is a multi-stage build: a static, pure-Go hostel binary on a
 `debian-slim` runtime that bundles the two optional facilities — **bubblewrap**
-(`--isolation bwrap`) and **chromium** (the browser amenity). Both stay optional:
+(the `suite` level) and **chromium** (the browser amenity). Both stay optional:
 hostel probes them at boot and degrades honestly, so a locked-down pod without
 namespaces still serves.
 
@@ -179,12 +177,12 @@ per-target so apt pulls the right-arch bwrap/chromium. `make image-multiarch`
 needs `docker buildx` and pushes directly (a multi-platform image can't load into
 the local docker).
 
-In-container defaults (all overridable via `HOSTEL_*`): `--isolation bwrap`,
+In-container defaults (all overridable via `HOSTEL_*`): `--isolation suite`,
 `--workspace-root /workspace` (a declared volume), `--chromium-path
 /usr/bin/chromium`. `tini` is PID 1 (reaps shell/chromium children); the
 `HEALTHCHECK` calls `hostel --health` (self-GETs `/healthz`, no curl needed).
 Whether bwrap actually isolates depends on the pod granting user namespaces /
-`CAP_SYS_ADMIN`; without them hostel logs the degrade and runs as `direct`. The
+`CAP_SYS_ADMIN`; without them hostel logs the degrade and runs at `dorm`. The
 image runs as root by default (bwrap mount setup + chromium `--no-sandbox`);
 harden with a dropped-capability `securityContext` per deployment.
 
