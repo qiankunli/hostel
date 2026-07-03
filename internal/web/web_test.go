@@ -314,6 +314,55 @@ func TestCheckpointEndpointAndPersistenceReporting(t *testing.T) {
 	}
 }
 
+// /v1/inventory is the scheduler's one-poll picture: instance capacity plus
+// every local bed — in-memory ones and luggage (evicted, dir kept).
+func TestInventoryEndpoint(t *testing.T) {
+	s := newTestServer(t)
+	s.mgr.SetLuggageLimits(1000, 800)
+
+	rec := do(t, s, "POST", "/v1/beds", strings.NewReader(`{"id":"inv-live"}`), map[string]string{"Content-Type": "application/json"})
+	if rec.Code != 200 {
+		t.Fatalf("create live = %d", rec.Code)
+	}
+	rec = do(t, s, "POST", "/v1/beds", strings.NewReader(`{"id":"inv-cold"}`), map[string]string{"Content-Type": "application/json"})
+	if rec.Code != 200 {
+		t.Fatalf("create cold = %d", rec.Code)
+	}
+	if rec = do(t, s, "DELETE", "/v1/beds/inv-cold", nil, nil); rec.Code != 200 {
+		t.Fatalf("evict cold = %d", rec.Code)
+	}
+
+	rec = do(t, s, "GET", "/v1/inventory", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("inventory = %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Instance struct {
+			Store            string `json:"store"`
+			MaxBeds          int    `json:"max_beds"`
+			ActiveBeds       int    `json:"active_beds"`
+			LuggageHighBytes int64  `json:"luggage_high_bytes"`
+		} `json:"instance"`
+		Beds []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"beds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Instance.Store != "noop" || body.Instance.ActiveBeds != 1 || body.Instance.LuggageHighBytes != 1000 {
+		t.Fatalf("instance = %+v", body.Instance)
+	}
+	states := map[string]string{}
+	for _, b := range body.Beds {
+		states[b.ID] = b.State
+	}
+	if states["inv-live"] != "active" || states["inv-cold"] != "luggage" {
+		t.Fatalf("bed states = %v, want inv-live active / inv-cold luggage", states)
+	}
+}
+
 func TestDeleteEvictVsPurge(t *testing.T) {
 	s := newTestServer(t)
 	// Create, then default DELETE = evict (noop store: no snapshot, but 200).

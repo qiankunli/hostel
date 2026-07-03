@@ -97,6 +97,9 @@ func (s *Server) routes() {
 		sess.DELETE("/:sessionId", s.sessionDelete)
 	}
 
+	// Scheduler-facing: capacity + all local beds (incl. luggage) in one poll.
+	e.GET("/v1/inventory", s.inventory)
+
 	v1 := e.Group("/v1/beds")
 	{
 		v1.GET("", s.bedList)
@@ -145,6 +148,7 @@ func (s *Server) opsOf(c *gin.Context) (*bed.Bed, *fsops.Ops) {
 
 func (s *Server) healthz(c *gin.Context) {
 	iso := s.mgr.Isolator()
+	high, low := s.mgr.LuggageLimits()
 	c.JSON(http.StatusOK, gin.H{
 		"ok":              true,
 		"isolator":        iso.Name(),
@@ -155,6 +159,10 @@ func (s *Server) healthz(c *gin.Context) {
 		"persistence":     s.mgr.StoreName(),
 		"isolation":       isolationView(iso),
 		"default_bed":     s.mgr.DefaultBedID(),
+		// Watermarks only — live luggage bytes require a scan; poll
+		// /v1/inventory for those.
+		"luggage_high_bytes": high,
+		"luggage_low_bytes":  low,
 	})
 }
 

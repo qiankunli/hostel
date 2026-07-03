@@ -60,6 +60,12 @@ type Config struct {
 	// PersistInterval is the periodic snapshot safety net (0 = only at
 	// lifecycle boundaries). Bounds how much work a crash can lose.
 	PersistInterval time.Duration
+	// LuggageHighBytes / LuggageLowBytes are the disk watermarks for luggage
+	// (evicted beds' local dirs kept as warm cache): past high, luggage GC
+	// deletes cold copies until under low. High 0 disables GC (luggage
+	// accumulates — fine when workspace-root is on disposable/ample disk).
+	LuggageHighBytes int64
+	LuggageLowBytes  int64
 
 	// Chromium amenity (docs/amenity.md): launch (path) or attach (CDP URL).
 	ChromiumPath     string
@@ -89,6 +95,8 @@ func Load(args []string) *Config {
 	fs.StringVar(&c.S3Prefix, "s3-prefix", envStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")
 	fs.StringVar(&c.S3Endpoint, "s3-endpoint", envStr("HOSTEL_S3_ENDPOINT", ""), "S3-compatible endpoint (empty = AWS)")
 	persist := fs.Duration("persist-interval", envDur("HOSTEL_PERSIST_INTERVAL", 0), "periodic snapshot interval, 0=lifecycle boundaries only")
+	fs.Int64Var(&c.LuggageHighBytes, "luggage-high-bytes", envInt64("HOSTEL_LUGGAGE_HIGH_BYTES", 0), "luggage disk high watermark in bytes, 0=no luggage GC")
+	fs.Int64Var(&c.LuggageLowBytes, "luggage-low-bytes", envInt64("HOSTEL_LUGGAGE_LOW_BYTES", 0), "luggage GC target in bytes (default 80% of high)")
 	fs.StringVar(&c.ChromiumPath, "chromium-path", envStr("HOSTEL_CHROMIUM_PATH", ""), "chromium binary for the browser amenity (empty = probe PATH)")
 	fs.StringVar(&c.ChromiumCDPURL, "chromium-cdp-url", envStr("HOSTEL_CHROMIUM_CDP_URL", ""), "attach to an existing Chromium CDP endpoint instead of launching")
 	idleStop := fs.Duration("chromium-idle-stop", envDur("HOSTEL_CHROMIUM_IDLE_STOP", 5*time.Minute), "stop a launched Chromium this long after its last tenant, 0=never")
@@ -97,12 +105,26 @@ func Load(args []string) *Config {
 	c.BedIdleTimeout = *idle
 	c.PersistInterval = *persist
 	c.ChromiumIdleStop = *idleStop
+	// Low defaults to 80% of high so a bare --luggage-high-bytes works; a low
+	// above high would make GC loop uselessly, so clamp it.
+	if c.LuggageHighBytes > 0 && (c.LuggageLowBytes <= 0 || c.LuggageLowBytes > c.LuggageHighBytes) {
+		c.LuggageLowBytes = c.LuggageHighBytes * 8 / 10
+	}
 	return c
 }
 
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return n
 		}
 	}

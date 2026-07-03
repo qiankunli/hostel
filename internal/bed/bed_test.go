@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/qiankunli/hostel/internal/isolation"
+	"github.com/qiankunli/hostel/internal/store"
 )
 
 func newTestManager(t *testing.T) *Manager {
@@ -188,17 +189,23 @@ func TestMaxBedsCap(t *testing.T) {
 type fakeStore struct {
 	mu    sync.Mutex
 	snaps map[string][]byte // bedID → marker file content
+	gens  map[string]int64  // bedID → generation of the stored snapshot
 	fail  bool              // force Persist to fail
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{snaps: map[string][]byte{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{snaps: map[string][]byte{}, gens: map[string]int64{}}
+}
 
 func (f *fakeStore) Name() string { return "fake" }
-func (f *fakeStore) Exists(_ context.Context, id string) (bool, error) {
+func (f *fakeStore) Stat(_ context.Context, id string) (*store.SnapshotInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	_, ok := f.snaps[id]
-	return ok, nil
+	data, ok := f.snaps[id]
+	if !ok {
+		return nil, nil
+	}
+	return &store.SnapshotInfo{Generation: f.gens[id], Bytes: int64(len(data))}, nil
 }
 func (f *fakeStore) Restore(_ context.Context, id, dir string) error {
 	f.mu.Lock()
@@ -208,7 +215,7 @@ func (f *fakeStore) Restore(_ context.Context, id, dir string) error {
 	}
 	return os.WriteFile(filepath.Join(dir, "data", "restored.txt"), f.snaps[id], 0o644)
 }
-func (f *fakeStore) Persist(_ context.Context, id, dir string) error {
+func (f *fakeStore) Persist(_ context.Context, id, dir string, generation int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail {
@@ -217,6 +224,7 @@ func (f *fakeStore) Persist(_ context.Context, id, dir string) error {
 	// dir is the bed dir: meta.json + data/. Mimic that shape.
 	data, _ := os.ReadFile(filepath.Join(dir, "data", "data.txt"))
 	f.snaps[id] = data
+	f.gens[id] = generation
 	return nil
 }
 
@@ -224,10 +232,18 @@ func (f *fakeStore) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.snaps, id)
+	delete(f.gens, id)
 	return nil
 }
 
-func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
+// generation returns the stored snapshot generation (0 = no snapshot).
+func (f *fakeStore) generation(id string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gens[id]
+}
+
+func TestEvictLeavesLuggageAndWarmResume(t *testing.T) {
 	root := t.TempDir()
 	fs := newFakeStore()
 	m, err := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
@@ -235,7 +251,8 @@ func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
 		t.Fatalf("NewManager: %v", err)
 	}
 
-	// Write data into a bed, delete it → snapshot taken, workspace gone.
+	// Write data into a bed, evict it → snapshot taken, local dir stays
+	// behind as luggage.
 	b, _ := m.Resolve("conv-1")
 	if err := os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("payload"), 0o644); err != nil {
 		t.Fatal(err)
@@ -243,20 +260,84 @@ func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
 	if ok, err := m.Evict("conv-1"); err != nil || !ok {
 		t.Fatalf("Evict: ok=%v err=%v", ok, err)
 	}
-	if _, err := os.Stat(b.Dir); !os.IsNotExist(err) {
-		t.Fatal("bed dir should be removed after evict")
+	if _, err := os.Stat(filepath.Join(b.Dir, "meta.json")); err != nil {
+		t.Fatalf("luggage should remain after evict: %v", err)
 	}
 	if string(fs.snaps["conv-1"]) != "payload" {
 		t.Fatalf("snapshot content = %q", fs.snaps["conv-1"])
 	}
+	meta, ok := loadMeta(b.Dir)
+	if !ok || meta.LastUsedAt.IsZero() {
+		t.Fatalf("luggage meta should carry LastUsedAt, got %+v (ok=%v)", meta, ok)
+	}
 
-	// Re-resolve the same bed id → restored before serving.
+	// Re-resolve the same bed id → warm start from luggage: the real file is
+	// still there and Restore was never called (no marker).
 	b2, err := m.Resolve("conv-1")
 	if err != nil {
 		t.Fatalf("re-Resolve: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "data.txt")); err != nil {
+		t.Fatalf("warm resume lost workspace data: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err == nil {
+		t.Fatal("fresh luggage must not be re-restored from the store")
+	}
+}
+
+// A luggage copy whose generation is behind the snapshot (the bed ran on
+// another instance meanwhile) must be discarded and re-restored, never served.
+func TestStaleLuggageDiscardedOnResume(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-s")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("old"), 0o644)
+	if ok, err := m.Evict("conv-s"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
+	}
+
+	// Another hostel persisted a newer snapshot.
+	fs.mu.Lock()
+	fs.gens["conv-s"] = fs.gens["conv-s"] + 1
+	fs.mu.Unlock()
+
+	b2, err := m.Resolve("conv-s")
+	if err != nil {
+		t.Fatalf("re-Resolve: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err != nil {
-		t.Fatalf("restore marker missing: %v", err)
+		t.Fatalf("stale luggage should be replaced by a restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "data.txt")); err == nil {
+		t.Fatal("stale luggage content must not survive")
+	}
+}
+
+// Without luggage (cold resume on a different/cleaned instance), the snapshot
+// is restored before serving.
+func TestColdResumeRestoresFromSnapshot(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-c")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("payload"), 0o644)
+	if ok, err := m.Evict("conv-c"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
+	}
+	// Simulate luggage GC / another instance: no local copy.
+	if err := os.RemoveAll(b.Dir); err != nil {
+		t.Fatal(err)
+	}
+
+	b2, err := m.Resolve("conv-c")
+	if err != nil {
+		t.Fatalf("re-Resolve: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err != nil {
+		t.Fatalf("cold resume should restore from snapshot: %v", err)
 	}
 }
 
@@ -359,9 +440,9 @@ type slowStore struct {
 	gate chan struct{} // Persist blocks until this closes
 }
 
-func (s *slowStore) Persist(ctx context.Context, id, dir string) error {
+func (s *slowStore) Persist(ctx context.Context, id, dir string, generation int64) error {
 	<-s.gate
-	return s.fakeStore.Persist(ctx, id, dir)
+	return s.fakeStore.Persist(ctx, id, dir, generation)
 }
 
 // Activity during an evict's persist window must CANCEL the eviction —
@@ -416,23 +497,168 @@ func TestPurgeEndsIdentity(t *testing.T) {
 	if ok, _ := m.Evict("conv-p"); !ok {
 		t.Fatal("evict failed")
 	}
-	if ok, _ := fs.Exists(context.Background(), "conv-p"); !ok {
+	if info, _ := fs.Stat(context.Background(), "conv-p"); info == nil {
 		t.Fatal("snapshot should exist after evict (DORMANT)")
 	}
-	// Purge the dormant bed: snapshot gone, resolve starts fresh.
+	// Purge the dormant bed: snapshot AND luggage gone, resolve starts fresh.
 	if err := m.Purge("conv-p"); err != nil {
 		t.Fatalf("Purge: %v", err)
 	}
-	if ok, _ := fs.Exists(context.Background(), "conv-p"); ok {
+	if info, _ := fs.Stat(context.Background(), "conv-p"); info != nil {
 		t.Fatal("snapshot should be deleted after purge")
+	}
+	if _, err := os.Stat(b.Dir); !os.IsNotExist(err) {
+		t.Fatal("luggage should be removed after purge")
 	}
 	b2, _ := m.Resolve("conv-p")
 	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err == nil {
 		t.Fatal("purged bed must start empty, not restored")
 	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "data.txt")); err == nil {
+		t.Fatal("purged bed must not resurrect old luggage data")
+	}
 	// Default bed is not purgeable.
 	if err := m.Purge("default"); err == nil {
 		t.Fatal("purging the default bed must be refused")
+	}
+}
+
+// Every successful persist bumps the generation by one, and the store's
+// metadata mirrors the bed meta's counter — this is the freshness token the
+// luggage warm-start (and any future fencing) compares against.
+func TestGenerationMonotonicAcrossPersists(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-g")
+	if err := m.Checkpoint(context.Background(), "conv-g"); err != nil {
+		t.Fatalf("checkpoint 1: %v", err)
+	}
+	if g := fs.generation("conv-g"); g != 1 {
+		t.Fatalf("generation after first persist = %d, want 1", g)
+	}
+	if err := m.Checkpoint(context.Background(), "conv-g"); err != nil {
+		t.Fatalf("checkpoint 2: %v", err)
+	}
+	if g := fs.generation("conv-g"); g != 2 {
+		t.Fatalf("generation after second persist = %d, want 2", g)
+	}
+	meta, ok := loadMeta(b.Dir)
+	if !ok || meta.Generation != 2 {
+		t.Fatalf("local meta generation = %+v (ok=%v), want 2", meta, ok)
+	}
+
+	// A failed upload still bumps the local counter (locally dirty, ahead of
+	// the store) but never advances LastPersistedAt.
+	before := meta.LastPersistedAt
+	fs.fail = true
+	if err := m.Checkpoint(context.Background(), "conv-g"); err == nil {
+		t.Fatal("checkpoint with failing store should error")
+	}
+	meta, _ = loadMeta(b.Dir)
+	if meta.Generation != 3 || !meta.LastPersistedAt.Equal(before) {
+		t.Fatalf("after failed persist: gen=%d lastPersisted=%v, want gen=3 lastPersisted=%v",
+			meta.Generation, meta.LastPersistedAt, before)
+	}
+	if g := fs.generation("conv-g"); g != 2 {
+		t.Fatalf("store generation after failed persist = %d, want 2", g)
+	}
+}
+
+// Luggage GC: over the high watermark, cold copies are deleted — stale
+// generation first (pure garbage), then LRU — until under the low watermark.
+func TestCollectLuggageWatermarks(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	mkLuggage := func(id string, size int) {
+		b, _ := m.Resolve(id)
+		payload := make([]byte, size)
+		if err := os.WriteFile(filepath.Join(b.Workspace, "data.txt"), payload, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := m.Evict(id); err != nil || !ok {
+			t.Fatalf("evict %s: ok=%v err=%v", id, ok, err)
+		}
+		time.Sleep(5 * time.Millisecond) // distinct LastUsedAt ordering
+	}
+	mkLuggage("conv-old", 10_000)
+	mkLuggage("conv-mid", 10_000)
+	mkLuggage("conv-new", 10_000)
+
+	if got := len(m.ListLuggage()); got != 3 {
+		t.Fatalf("luggage count = %d, want 3", got)
+	}
+	// Below the watermark: nothing reaped.
+	m.SetLuggageLimits(100_000, 80_000)
+	if reaped := m.CollectLuggage(context.Background()); len(reaped) != 0 {
+		t.Fatalf("under watermark reaped %v, want none", reaped)
+	}
+	// Over the watermark: LRU order, stop under low. ~30KB total → target
+	// ~15KB keeps one entry (plus meta noise).
+	m.SetLuggageLimits(25_000, 15_000)
+	reaped := m.CollectLuggage(context.Background())
+	if len(reaped) != 2 || reaped[0] != "conv-old" || reaped[1] != "conv-mid" {
+		t.Fatalf("reaped %v, want [conv-old conv-mid]", reaped)
+	}
+	if got := m.ListLuggage(); len(got) != 1 || got[0].BedID != "conv-new" {
+		t.Fatalf("survivors = %+v, want conv-new", got)
+	}
+}
+
+// A stale-generation copy is reaped before fresher-but-older ones.
+func TestCollectLuggageStaleFirst(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	for _, id := range []string{"conv-a", "conv-b"} {
+		b, _ := m.Resolve(id)
+		_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), make([]byte, 10_000), 0o644)
+		if ok, err := m.Evict(id); err != nil || !ok {
+			t.Fatalf("evict %s: ok=%v err=%v", id, ok, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// conv-b is the most recent locally, but the bed ran elsewhere since —
+	// its luggage is pure garbage and must go first.
+	fs.mu.Lock()
+	fs.gens["conv-b"]++
+	fs.mu.Unlock()
+
+	m.SetLuggageLimits(15_000, 12_000)
+	reaped := m.CollectLuggage(context.Background())
+	if len(reaped) != 1 || reaped[0] != "conv-b" {
+		t.Fatalf("reaped %v, want [conv-b] (stale first)", reaped)
+	}
+}
+
+// Inventory reports in-memory beds and luggage with generations — the
+// scheduler's placement hint.
+func TestInventory(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	_, _ = m.Resolve("conv-live")
+	b, _ := m.Resolve("conv-cold")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("x"), 0o644)
+	if ok, err := m.Evict("conv-cold"); err != nil || !ok {
+		t.Fatalf("evict: ok=%v err=%v", ok, err)
+	}
+
+	byID := map[string]InventoryBed{}
+	for _, e := range m.Inventory() {
+		byID[e.ID] = e
+	}
+	if e := byID["conv-live"]; e.State != "active" || e.Generation != 0 {
+		t.Fatalf("conv-live = %+v, want active gen 0", e)
+	}
+	cold := byID["conv-cold"]
+	if cold.State != "luggage" || cold.Generation != 1 || cold.Bytes == 0 || cold.LastUsedAt.IsZero() {
+		t.Fatalf("conv-cold = %+v, want luggage gen 1 with bytes and last_used_at", cold)
 	}
 }
 

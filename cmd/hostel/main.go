@@ -95,6 +95,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("hostel: init bed manager: %v", err)
 	}
+	mgr.SetLuggageLimits(cfg.LuggageHighBytes, cfg.LuggageLowBytes)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -111,6 +112,26 @@ func main() {
 				case <-t.C:
 					if reaped := mgr.CollectIdle(cfg.BedIdleTimeout); len(reaped) > 0 {
 						log.Printf("hostel: reaped idle beds: %v", reaped)
+					}
+				}
+			}
+		}()
+	}
+
+	// Luggage GC: keep evicted beds' local dirs (warm cache) under the disk
+	// watermarks. Fixed cadence — the watermarks, not the tick rate, decide
+	// how much disk luggage may hold.
+	if cfg.LuggageHighBytes > 0 {
+		go func() {
+			t := time.NewTicker(time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if reaped := mgr.CollectLuggage(ctx); len(reaped) > 0 {
+						log.Printf("hostel: reaped luggage: %v", reaped)
 					}
 				}
 			}

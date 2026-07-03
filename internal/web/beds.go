@@ -135,6 +135,7 @@ func (s *Server) capabilities(c *gin.Context) {
 		"command":         true,
 		"session":         true,
 		"beds":            true,
+		"inventory":       true,
 		"amenities":       amenities, // name → unavailable|idle|running
 		// Explicitly-not-yet capabilities, so SDKs don't probe blindly.
 		"pty":            false,

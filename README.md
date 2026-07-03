@@ -63,6 +63,7 @@ curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv
 | Command | `POST /command` (SSE), `DELETE /command`, `GET /command/status/:id`, `GET /command/:id/logs` |
 | Session | `POST /session`, `POST /session/:id/run` (SSE), `DELETE /session/:id` |
 | Beds | `GET/POST /v1/beds`, `GET/DELETE /v1/beds/:id`, `POST /v1/beds/:id/checkpoint`, `GET /v1/beds/capabilities` |
+| Scheduler | `GET /v1/inventory` — capacity + every local bed (active and luggage) with its persisted generation |
 
 Path semantics: clients address files under the virtual prefix `/workspace`;
 hostel rebases that onto the bed's workspace directory. Relative paths are
@@ -129,6 +130,7 @@ reports `amenities: {chromium: idle|running}`.
 Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
 `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` / `--store` /
 `--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval` /
+`--luggage-high-bytes` / `--luggage-low-bytes` /
 `--chromium-path` / `--chromium-cdp-url` / `--chromium-idle-stop`.
 
 Persistence: with `--store s3` each bed's workspace is snapshotted to
@@ -139,6 +141,16 @@ durable identity is the snapshot; the local dir is just its working copy.
 `DELETE /v1/beds/:id` evicts (identity kept); add `?purge=true` to also delete
 the snapshot and end the identity. An evict raced by live traffic returns
 `409 BED_BUSY` instead of dropping mid-flight writes.
+
+Luggage: an evicted bed leaves its local dir behind as a warm cache — resuming
+on the same instance skips the snapshot download (a monotonic generation
+counter, carried in bed meta and snapshot metadata, decides freshness; a copy
+that fell behind is discarded and re-restored). `--luggage-high-bytes` caps the
+disk luggage may hold: past it, cold copies are deleted — stale generation
+first, then least recently used — until under `--luggage-low-bytes` (default
+80% of high). With the `noop` store luggage is the only copy, so luggage GC
+there destroys data — same honesty rule as everywhere: `/healthz` tells you
+which world you're in.
 
 Capacity: `--max-beds N` caps concurrent beds (0 = unlimited; the default bed
 is neither refused nor counted). A full instance answers new-bed requests with

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,23 +64,38 @@ func (s *s3Store) key(bedID string) string {
 	return path.Join(s.prefix, bedID+".tar.gz")
 }
 
-func (s *s3Store) Exists(ctx context.Context, bedID string) (bool, error) {
+// generationMetaKey is the S3 user-metadata key carrying the bed generation
+// (served back by HEAD, so Stat never downloads the snapshot). The SDK strips
+// the x-amz-meta- prefix and lowercases keys on read.
+const generationMetaKey = "generation"
+
+func (s *s3Store) Stat(ctx context.Context, bedID string) (*SnapshotInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, s3OpTimeout)
 	defer cancel()
-	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket, Key: strPtr(s.key(bedID)),
 	})
 	if err != nil {
 		var nf *s3types.NotFound
 		if errors.As(err, &nf) {
-			return false, nil
+			return nil, nil
 		}
-		return false, fmt.Errorf("store: head %s: %w", s.key(bedID), err)
+		return nil, fmt.Errorf("store: head %s: %w", s.key(bedID), err)
 	}
-	return true, nil
+	info := &SnapshotInfo{}
+	if out.ContentLength != nil {
+		info.Bytes = *out.ContentLength
+	}
+	// Missing/garbled metadata (snapshot from a pre-generation hostel) reads
+	// as generation 0 — any local copy counts as fresh, matching the old
+	// "trust what's on disk after restart" behavior.
+	if g, err := strconv.ParseInt(out.Metadata[generationMetaKey], 10, 64); err == nil {
+		info.Generation = g
+	}
+	return info, nil
 }
 
-func (s *s3Store) Persist(ctx context.Context, bedID, dir string) error {
+func (s *s3Store) Persist(ctx context.Context, bedID, dir string, generation int64) error {
 	ctx, cancel := context.WithTimeout(ctx, s3OpTimeout)
 	defer cancel()
 
@@ -113,6 +129,7 @@ func (s *s3Store) Persist(ctx context.Context, bedID, dir string) error {
 		Key:           strPtr(s.key(bedID)),
 		Body:          tmp,
 		ContentLength: &size,
+		Metadata:      map[string]string{generationMetaKey: strconv.FormatInt(generation, 10)},
 	})
 	if err != nil {
 		return fmt.Errorf("store: put %s: %w", s.key(bedID), err)

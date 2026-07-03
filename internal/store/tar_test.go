@@ -100,9 +100,9 @@ func TestNoopStore(t *testing.T) {
 	if err != nil || st.Name() != "noop" {
 		t.Fatalf("New noop: %v %v", st, err)
 	}
-	ok, err := st.Exists(t.Context(), "x")
-	if err != nil || ok {
-		t.Fatalf("noop Exists = %v %v", ok, err)
+	info, err := st.Stat(t.Context(), "x")
+	if err != nil || info != nil {
+		t.Fatalf("noop Stat = %v %v", info, err)
 	}
 	if _, err := New(t.Context(), Config{Backend: "s3"}); err == nil {
 		t.Fatal("s3 without bucket should fail")
