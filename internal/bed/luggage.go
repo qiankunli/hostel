@@ -48,6 +48,8 @@ type LuggageEntry struct {
 	// LastUsedAt orders LRU eviction: the evict-time stamp, falling back to
 	// LastPersistedAt and then dir mtime for copies predating the stamp.
 	LastUsedAt time.Time
+	// Profile is the usage picture the bed left behind (from its meta).
+	Profile Profile
 }
 
 // ListLuggage scans the workspace root for bed dirs that are not ACTIVE —
@@ -76,6 +78,7 @@ func (m *Manager) ListLuggage() []LuggageEntry {
 		if meta, ok := loadMeta(dir); ok {
 			l.Generation = meta.Generation
 			l.LastUsedAt = meta.LastUsedAt
+			l.Profile = meta.Profile
 			if l.LastUsedAt.IsZero() {
 				l.LastUsedAt = meta.LastPersistedAt
 			}
@@ -204,6 +207,10 @@ type InventoryBed struct {
 	Generation int64     `json:"generation"`
 	Bytes      int64     `json:"bytes,omitempty"` // luggage only (active dirs aren't sized)
 	LastUsedAt time.Time `json:"last_used_at"`
+	// Profile lets the scheduler weigh placement and migration: command
+	// rate/duration derive from deltas between polls; Last{Persist,Restore}Ms
+	// approximate this bed's migration cost (node-specific — see Profile).
+	Profile Profile `json:"profile,omitzero"`
 }
 
 // Inventory reports all local beds for the upstream scheduler: placement
@@ -219,10 +226,12 @@ func (m *Manager) Inventory() []InventoryBed {
 		if meta, ok := loadMeta(b.Dir); ok {
 			gen = meta.Generation
 		}
-		out = append(out, InventoryBed{ID: b.ID, State: b.State(), Generation: gen, LastUsedAt: b.LastUsed()})
+		// The in-memory profile, not meta's: an active bed's counters run
+		// ahead of the last flush, and fresher is better for a hint.
+		out = append(out, InventoryBed{ID: b.ID, State: b.State(), Generation: gen, LastUsedAt: b.LastUsed(), Profile: b.Profile()})
 	}
 	for _, l := range m.ListLuggage() {
-		out = append(out, InventoryBed{ID: l.BedID, State: "luggage", Generation: l.Generation, Bytes: l.Bytes, LastUsedAt: l.LastUsedAt})
+		out = append(out, InventoryBed{ID: l.BedID, State: "luggage", Generation: l.Generation, Bytes: l.Bytes, LastUsedAt: l.LastUsedAt, Profile: l.Profile})
 	}
 	return out
 }

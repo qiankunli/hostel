@@ -114,6 +114,7 @@ func (s *Server) runCommand(c *gin.Context) {
 	res, err := sh.Run(c.Request.Context(), wrapWithCwd(req.Command, hostCwd, req.Envs), func(line string) {
 		sse.send(StreamEvent{Type: EventStdout, Text: line})
 	})
+	b.RecordCommand(time.Since(start))
 	if err != nil {
 		if sse.hasStarted() {
 			sse.send(StreamEvent{Type: EventError, Error: err.Error()})
@@ -278,6 +279,7 @@ func (s *Server) sessionRun(c *gin.Context) {
 	res, err := sh.Run(ctx, wrapWithCwd(req.Command, hostCwd, nil), func(line string) {
 		sse.send(StreamEvent{Type: EventStdout, Text: line})
 	})
+	b.RecordCommand(time.Since(start))
 	if err != nil {
 		if sse.hasStarted() {
 			sse.send(StreamEvent{Type: EventError, Error: err.Error()})

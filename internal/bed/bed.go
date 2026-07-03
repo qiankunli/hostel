@@ -50,6 +50,7 @@ type Bed struct {
 	persistedAt time.Time         // last successful snapshot (zero = never)
 	evicting    bool              // an evict's persist is in flight
 	shells      map[string]*Shell // stateful bash sessions (spec /session)
+	profile     Profile           // cumulative; seeded from meta, flushed at persist
 }
 
 // State reports the lifecycle state for observability: "active" or "evicting".
@@ -74,6 +75,22 @@ func (b *Bed) LastUsed() time.Time {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.lastUsed
+}
+
+// RecordCommand adds one finished run (foreground, session or background) to
+// the bed's usage profile. Failed runs count too — they are load all the same.
+func (b *Bed) RecordCommand(d time.Duration) {
+	b.mu.Lock()
+	b.profile.CmdCount++
+	b.profile.CmdTotalMs += d.Milliseconds()
+	b.mu.Unlock()
+}
+
+// Profile returns a copy of the bed's current usage profile.
+func (b *Bed) Profile() Profile {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.profile
 }
 
 // Manager owns the set of beds and their lifecycle. Safe for concurrent use.
@@ -181,6 +198,7 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	// resolve — silently starting empty when a snapshot exists would look
 	// like data loss.
 	restored := false
+	var restoreMs int64
 	if info, err := m.store.Stat(context.Background(), id); err != nil {
 		return nil, fmt.Errorf("bed: check snapshot %s: %w", id, err)
 	} else if info != nil {
@@ -192,9 +210,11 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 			if err := os.MkdirAll(bedDir, 0o755); err != nil {
 				return nil, fmt.Errorf("bed: recreate bed dir %s: %w", bedDir, err)
 			}
+			t0 := time.Now()
 			if err := m.store.Restore(context.Background(), id, bedDir); err != nil {
 				return nil, fmt.Errorf("bed: restore %s: %w", id, err)
 			}
+			restoreMs = time.Since(t0).Milliseconds()
 			restored = true
 		}
 	}
@@ -217,7 +237,15 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if restored || persistedAt.IsZero() {
 		persistedAt = now
 	}
-	b := &Bed{ID: id, Dir: bedDir, Workspace: dataDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, shells: make(map[string]*Shell)}
+	// The snapshot's profile keeps accumulating in memory; a fresh restore
+	// measurement replaces whatever host measured the previous one. In-memory
+	// only until the next persist flushes it — losing it to a crash is fine,
+	// it's a hint.
+	profile := meta.Profile
+	if restored {
+		profile.LastRestoreMs = restoreMs
+	}
+	b := &Bed{ID: id, Dir: bedDir, Workspace: dataDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell)}
 	m.beds[id] = b
 	return b, nil
 }
@@ -370,15 +398,22 @@ func (m *Manager) persistBed(ctx context.Context, b *Bed) error {
 		meta = bedMeta{Version: 1, BedID: b.ID, CreatedAt: b.CreatedAt}
 	}
 	meta.Generation++
+	// Flush the in-memory counters pre-pack so the snapshot carries them.
+	// LastPersistMs necessarily lags one persist behind in the snapshot (this
+	// persist's duration is only known after the upload) — fine for a hint.
+	meta.Profile = b.Profile()
 	if err := saveMeta(b.Dir, meta); err != nil {
 		return fmt.Errorf("bed: bump generation %s: %w", b.ID, err)
 	}
+	t0 := time.Now()
 	if err := m.store.Persist(ctx, b.ID, b.Dir, meta.Generation); err != nil {
 		return err
 	}
 	now := time.Now()
 	b.mu.Lock()
 	b.persistedAt = now
+	b.profile.LastPersistMs = now.Sub(t0).Milliseconds()
+	meta.Profile = b.profile
 	b.mu.Unlock()
 	meta.LastPersistedAt = now
 	_ = saveMeta(b.Dir, meta) // best-effort; in-memory watermark is set
@@ -545,5 +580,16 @@ func (m *Manager) StartCommand(b *Bed, command, hostCwd string, envs map[string]
 	if err != nil {
 		return nil, err
 	}
-	return m.commands.start(b.ID, cmd, timeout, onLine)
+	c, err := m.commands.start(b.ID, cmd, timeout, onLine)
+	if err != nil {
+		return nil, err
+	}
+	go func() { // profile the run once it is reaped (background = async)
+		c.Wait()
+		st := c.Status()
+		if st.FinishedAt != nil {
+			b.RecordCommand(st.FinishedAt.Sub(st.StartedAt))
+		}
+	}()
+	return c, nil
 }

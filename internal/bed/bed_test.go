@@ -662,6 +662,91 @@ func TestInventory(t *testing.T) {
 	}
 }
 
+// Profile counters accumulate in memory, flush into meta at persist, and keep
+// accumulating after evict → warm resume (the meta round-trip).
+func TestProfileAccumulatesAndSurvivesEvict(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-prof")
+	b.RecordCommand(1500 * time.Millisecond)
+	b.RecordCommand(500 * time.Millisecond)
+	if p := b.Profile(); p.CmdCount != 2 || p.CmdTotalMs != 2000 {
+		t.Fatalf("profile = %+v, want 2 cmds / 2000ms", p)
+	}
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("x"), 0o644)
+	if ok, err := m.Evict("conv-prof"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
+	}
+
+	// The luggage meta (what the snapshot packs) carries the counters, and the
+	// inventory's luggage row exposes them.
+	meta, ok := loadMeta(filepath.Join(root, "conv-prof"))
+	if !ok || meta.Profile.CmdCount != 2 || meta.Profile.CmdTotalMs != 2000 {
+		t.Fatalf("luggage meta profile = %+v (ok=%v)", meta.Profile, ok)
+	}
+	for _, e := range m.Inventory() {
+		if e.ID == "conv-prof" && e.Profile.CmdCount != 2 {
+			t.Fatalf("inventory profile = %+v", e.Profile)
+		}
+	}
+
+	// Warm resume seeds from meta and keeps counting on top.
+	b2, err := m.Resolve("conv-prof")
+	if err != nil {
+		t.Fatalf("re-Resolve: %v", err)
+	}
+	b2.RecordCommand(1000 * time.Millisecond)
+	if p := b2.Profile(); p.CmdCount != 3 || p.CmdTotalMs != 3000 {
+		t.Fatalf("profile after resume = %+v, want 3 cmds / 3000ms", p)
+	}
+}
+
+// sleepyStore makes persist/restore take measurable wall time, so the
+// node-specific migration-cost fields have something to record.
+type sleepyStore struct{ *fakeStore }
+
+func (s sleepyStore) Persist(ctx context.Context, id, dir string, generation int64) error {
+	time.Sleep(20 * time.Millisecond)
+	return s.fakeStore.Persist(ctx, id, dir, generation)
+}
+func (s sleepyStore) Restore(ctx context.Context, id, dir string) error {
+	time.Sleep(20 * time.Millisecond)
+	return s.fakeStore.Restore(ctx, id, dir)
+}
+
+// Last{Persist,Restore}Ms are measured where the work actually happens: the
+// persist duration lands in the luggage meta after evict, the restore duration
+// lands in the resumed bed's in-memory profile after a cold resume.
+func TestProfileRecordsMigrationCost(t *testing.T) {
+	root := t.TempDir()
+	ss := sleepyStore{fakeStore: newFakeStore()}
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, ss)
+
+	b, _ := m.Resolve("conv-cost")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("x"), 0o644)
+	if ok, err := m.Evict("conv-cost"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
+	}
+	meta, ok := loadMeta(filepath.Join(root, "conv-cost"))
+	if !ok || meta.Profile.LastPersistMs < 10 {
+		t.Fatalf("LastPersistMs = %d (ok=%v), want >= 10", meta.Profile.LastPersistMs, ok)
+	}
+
+	// Cold resume (luggage gone) → the restore is timed on this host.
+	if err := os.RemoveAll(filepath.Join(root, "conv-cost")); err != nil {
+		t.Fatal(err)
+	}
+	b2, err := m.Resolve("conv-cost")
+	if err != nil {
+		t.Fatalf("re-Resolve: %v", err)
+	}
+	if p := b2.Profile(); p.LastRestoreMs < 10 {
+		t.Fatalf("LastRestoreMs = %d, want >= 10", p.LastRestoreMs)
+	}
+}
+
 func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 	root := t.TempDir()
 	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
