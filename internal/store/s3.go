@@ -66,7 +66,9 @@ func newS3Client(ctx context.Context, cfg Config) (*s3.Client, error) {
 	}), nil
 }
 
-func (s *s3Store) Name() string { return "s3" }
+// Name says "tarball" (the layout), not "s3" (the transport): cas rides the
+// same S3-compatible storage, so the transport doesn't distinguish backends.
+func (s *s3Store) Name() string { return "tarball" }
 
 func (s *s3Store) key(bedID string) string {
 	return path.Join(s.prefix, bedID+".tar.gz")

@@ -22,7 +22,7 @@ internal/
 │   ├── shell.go       常驻 bash：单 reader goroutine→lines chan，Run 用 marker 分帧、单消费（状态跨 run 保持）
 │   └── command.go     一次性命令 registry：前台/后台、status、logs（cursor 增量、环形缓冲）
 ├── fsops/             bed-workspace-rooted 文件操作；Resolve 做路径 confine + /workspace 虚拟前缀 rebase；新建路径按 workspace 属主 chown（单一属主不变式）
-├── store/             workspace 持久化：Store 接口 + noop/s3(tarball)/cas(desync 增量,只传变更块)；见 docs/persistence.md
+├── store/             workspace 持久化：Store 接口 + noop/tarball/cas(desync 增量,只传变更块)，后两者同为 S3 兼容存储上的布局；见 docs/persistence.md
 ├── amenity/           Amenity 接口(生命周期 State)+ Registry；chromium 实例(共享浏览器/每 bed BrowserContext)；见 docs/amenity.md
 └── web/               gin 薄适配层：server(路由+bedOf 解析) / errors / sse / files / command / beds
 ```

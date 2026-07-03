@@ -131,7 +131,7 @@ Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
 `--luggage-high-bytes` / `--luggage-low-bytes` /
 `--chromium-path` / `--chromium-cdp-url` / `--chromium-idle-stop`.
 
-Persistence: with `--store s3` each bed's workspace is snapshotted to
+Persistence: with `--store tarball` (legacy alias: `s3`) each bed's workspace is snapshotted to
 `s3://<bucket>/<prefix>/<bedID>.tar.gz` (any S3-compatible endpoint) — restored
 when the bed is created again, persisted on evict (DELETE / idle reap) or
 explicit checkpoint, plus an optional `--persist-interval` safety net. A bed's

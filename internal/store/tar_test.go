@@ -104,8 +104,10 @@ func TestNoopStore(t *testing.T) {
 	if err != nil || info != nil {
 		t.Fatalf("noop Stat = %v %v", info, err)
 	}
-	if _, err := New(t.Context(), Config{Backend: "s3"}); err == nil {
-		t.Fatal("s3 without bucket should fail")
+	for _, backend := range []string{"tarball", "s3" /* legacy alias */, "cas"} {
+		if _, err := New(t.Context(), Config{Backend: backend}); err == nil {
+			t.Fatalf("%s without bucket should fail", backend)
+		}
 	}
 	if _, err := New(t.Context(), Config{Backend: "bogus"}); err == nil {
 		t.Fatal("unknown backend should fail")
