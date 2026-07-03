@@ -38,7 +38,10 @@ type HostFacts struct {
 }
 
 // HasCap reports whether capability bit (e.g. capSETUID) is in the effective
-// set. Always false off Linux, where EffectiveCaps is 0.
+// set. bit must be < 64; a larger value shifts out to a well-defined 0 (Go
+// shift semantics), so HasCap returns false rather than crashing — but that's a
+// misuse, not a real "cap absent". Always false off Linux, where EffectiveCaps
+// is 0.
 func (f HostFacts) HasCap(bit uint) bool { return f.EffectiveCaps&(1<<bit) != 0 }
 
 // collectHostFacts probes the host once at boot. The bubblewrap lookup is
