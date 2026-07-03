@@ -45,7 +45,7 @@ func resolveMechs(req Level, candidates []Isolator) (chosen Isolator, eff, ceili
 		if m.Level() > ceiling {
 			ceiling = m.Level()
 		}
-		if m.Level() <= req && m.Level() >= eff {
+		if m.Level() <= req && m.Level() > eff {
 			chosen = m
 			eff = m.Level()
 		}

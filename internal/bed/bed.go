@@ -221,6 +221,14 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace %s: %w", dataDir, err)
 	}
+	// Let the isolator prepare the freshly (re)created data dir — uid isolation
+	// chowns it to the bed's dedicated uid; other mechanisms no-op. Must run
+	// after any restore repopulated the tree, before the bed serves.
+	if p, ok := m.iso.(isolation.Preparer); ok {
+		if err := p.Prepare(isolation.Workspace{Path: dataDir}); err != nil {
+			return nil, fmt.Errorf("bed: prepare workspace %s: %w", id, err)
+		}
+	}
 
 	now := time.Now()
 	meta, ok := loadMeta(bedDir)

@@ -101,6 +101,16 @@ type Report interface {
 	Mechanism() string
 }
 
+// Preparer is an optional Isolator capability: a mechanism that must prepare a
+// bed's data dir before its commands run. uid isolation implements it (chown
+// the dir to the bed's dedicated uid); mount- and LSM-based mechanisms need no
+// on-disk prep and don't. The bed manager calls Prepare after (re)creating the
+// data dir. The resolved result always satisfies Preparer (no-op when the
+// chosen mechanism isn't one), so callers can assert unconditionally.
+type Preparer interface {
+	Prepare(ws Workspace) error
+}
+
 // resolved wraps the chosen mechanism with the resolution facts.
 type resolved struct {
 	Isolator
@@ -112,6 +122,16 @@ func (r *resolved) Effective() Level  { return r.eff }
 func (r *resolved) Ceiling() Level    { return r.ceil }
 func (r *resolved) Mechanism() string { return r.Isolator.Name() }
 
+// Prepare forwards to the chosen mechanism when it needs data-dir preparation
+// (uid), else no-ops — so the bed manager can assert Preparer on the result
+// unconditionally, without knowing which mechanism won.
+func (r *resolved) Prepare(ws Workspace) error {
+	if p, ok := r.Isolator.(Preparer); ok {
+		return p.Prepare(ws)
+	}
+	return nil
+}
+
 // New resolves the requested isolation level against what the environment can
 // deliver and returns the chosen mechanism (also implementing Report). The
 // returned value is always usable — worst case it degrades to dorm/direct,
@@ -119,11 +139,15 @@ func (r *resolved) Mechanism() string { return r.Isolator.Name() }
 func New(requested, workspaceRoot string) Isolator {
 	req := parseRequest(requested)
 
-	// Candidate mechanisms, strongest first. Each probes availability at
-	// construction. direct (dorm) is the always-available floor.
+	// Candidate mechanisms, strongest first; within a level, preferred first
+	// (the selection below keeps the first available at each level). direct
+	// (dorm) is the always-available floor. Two mechanisms serve room: landlock
+	// (kernel LSM, no privilege — preferred) and uid (Unix DAC, needs setuid
+	// caps — the fallback where Landlock is absent, e.g. old/custom kernels).
 	candidates := []Isolator{
 		newBwrap(workspaceRoot),    // suite
-		newLandlock(workspaceRoot), // room
+		newLandlock(workspaceRoot), // room — preferred
+		newUID(workspaceRoot),      // room — fallback
 		direct{},                   // dorm
 	}
 
@@ -137,8 +161,10 @@ func New(requested, workspaceRoot string) Isolator {
 		if m.Level() > ceiling {
 			ceiling = m.Level()
 		}
-		// Highest available level that does not exceed the request.
-		if m.Level() <= req && m.Level() >= eff {
+		// Highest available level that does not exceed the request; among
+		// equal-level mechanisms the FIRST-listed wins (strict >), so the
+		// preferred realization of a level takes precedence over its fallback.
+		if m.Level() <= req && m.Level() > eff {
 			chosen = m
 			eff = m.Level()
 		}
