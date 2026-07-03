@@ -96,6 +96,22 @@ func (s *s3Store) Stat(ctx context.Context, bedID string) (*SnapshotInfo, error)
 }
 
 func (s *s3Store) Persist(ctx context.Context, bedID, dir string, generation int64) error {
+	// Fencing guard: HEAD before writing. Our generation was derived from the
+	// snapshot we activated from, so the remote generation must still be below
+	// it; remote >= ours means another instance persisted this bed after our
+	// activation (dual-activation) and last-writer-wins would silently drop
+	// its data. This is a detector, not an atomic CAS — a writer landing in
+	// the HEAD→PUT window still slips through — but real dual-activation
+	// lasts seconds-to-minutes, so the check catches it in practice. True
+	// atomicity needs conditional PUT (If-Match), pending support across the
+	// S3-compatible targets (MinIO/TOS).
+	if cur, err := s.Stat(ctx, bedID); err != nil {
+		return fmt.Errorf("store: persist %s: pre-write stat: %w", bedID, err)
+	} else if cur != nil && cur.Generation >= generation {
+		return fmt.Errorf("store: persist %s: remote generation %d >= local %d: %w",
+			bedID, cur.Generation, generation, ErrConflict)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, s3OpTimeout)
 	defer cancel()
 

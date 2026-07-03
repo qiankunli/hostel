@@ -22,8 +22,18 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
+
+// ErrConflict reports that the backend already holds a snapshot at least as
+// new as the one being persisted: another hostel instance has persisted this
+// bed since we activated it (dual-activation — the upstream scheduler's
+// single-writer guarantee was violated). First writer wins: overwriting would
+// silently drop the other instance's data, which is strictly worse than
+// failing loudly. Callers must not blindly retry; the bed needs re-activation
+// from the newer snapshot (docs/persistence.md §3.5).
+var ErrConflict = errors.New("snapshot conflict: concurrent writer detected")
 
 // SnapshotInfo describes a bed's durable snapshot without downloading it.
 type SnapshotInfo struct {

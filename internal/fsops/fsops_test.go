@@ -15,6 +15,7 @@
 package fsops
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -122,4 +123,54 @@ func TestSearch(t *testing.T) {
 	if len(hits) != 2 {
 		t.Fatalf("Search *.go: want 2, got %d (%+v)", len(hits), hits)
 	}
+}
+
+// Owner inheritance: without root the real cross-uid chown can't run (that's
+// exercised by the uid mechanism's boot smoke on real hosts), so these tests
+// pin the plumbing around it.
+func TestOwnerInheritance(t *testing.T) {
+	t.Run("self-owned workspace disables chown", func(t *testing.T) {
+		o := New(t.TempDir())
+		if o.uid != -1 || o.gid != -1 {
+			t.Fatalf("self-owned root: owner = %d:%d, want -1:-1 (no chown)", o.uid, o.gid)
+		}
+	})
+
+	t.Run("owned paths still created", func(t *testing.T) {
+		// Chown-to-self is always permitted, so wiring uid/gid to the current
+		// user drives the chownNew/mkdirAllOwned code paths for real.
+		root := t.TempDir()
+		o := New(root)
+		o.uid, o.gid = os.Geteuid(), os.Getegid()
+
+		if err := o.Write("/workspace/a/b/c.txt", []byte("x"), 0); err != nil {
+			t.Fatalf("Write nested: %v", err)
+		}
+		if err := o.MakeDir("d/e"); err != nil {
+			t.Fatalf("MakeDir: %v", err)
+		}
+		if err := o.Rename("a/b/c.txt", "f/moved.txt"); err != nil {
+			t.Fatalf("Rename into new dir: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "f", "moved.txt")); err != nil {
+			t.Fatalf("moved file missing: %v", err)
+		}
+	})
+
+	t.Run("hardlinked file is not rehomed", func(t *testing.T) {
+		root := t.TempDir()
+		o := New(root)
+		o.uid, o.gid = os.Geteuid(), os.Getegid()
+
+		orig := filepath.Join(root, "orig")
+		if err := os.WriteFile(orig, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		linked := filepath.Join(root, "linked")
+		if err := os.Link(orig, linked); err != nil {
+			t.Fatal(err)
+		}
+		// Must silently skip (nlink>1), not error or chown the shared inode.
+		o.chownNew(linked)
+	})
 }
