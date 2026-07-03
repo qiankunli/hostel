@@ -36,9 +36,10 @@ type Config struct {
 	// WorkspaceRoot is the parent dir under which each bed gets its workspace
 	// (<root>/<bedID>). In a pod this is typically a bind of shared network FS.
 	WorkspaceRoot string
-	// IsolationMode selects how a bed's commands are confined:
-	//   "direct" — no isolation, just chdir into the workspace (dev / trusted).
-	//   "bwrap"  — Linux only: run under bubblewrap (mount/pid/uts/ipc ns).
+	// IsolationMode is the requested data-isolation level (room type):
+	//   "dorm" | "room" | "suite" | "auto" (= environment ceiling, default).
+	// Levels resolve to mechanisms (direct/landlock/bwrap) in internal/isolation;
+	// effective = min(requested, ceiling), over-asks degrade honestly.
 	IsolationMode string
 	// DefaultBed is the bed id used when a request omits one — lets simple
 	// single-tenant callers ignore the bed concept entirely.

@@ -17,6 +17,6 @@
 package isolation
 
 // newBwrap on non-Linux falls back to direct: bubblewrap is Linux-only, and
-// hostel's dev target (macOS) has no namespaces. Keeps `--isolation bwrap`
+// hostel's dev target (macOS) has no namespaces. Keeps `--isolation suite`
 // from failing to boot during local development.
 func newBwrap(string) Isolator { return direct{} }

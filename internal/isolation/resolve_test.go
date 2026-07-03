@@ -102,14 +102,23 @@ func TestParseRequestAndNewReports(t *testing.T) {
 			t.Errorf("parseRequest(%q) = %s, want %s", in, got, want)
 		}
 	}
-	// On this host (mac/CI, no bwrap/landlock) New must resolve to dorm/direct
-	// and expose the Report interface honestly.
+	// New's selection rule is table-tested above with fake mechanisms; here only
+	// assert host-independent invariants — what "auto" lands on varies by host
+	// (mac/CI → dorm/direct, a Linux box with bwrap → suite/bwrap).
 	iso := New("auto", t.TempDir())
-	if iso.Name() != "direct" || iso.Level() != Dorm {
-		t.Fatalf("New(auto) on unprivileged host = %s/%s", iso.Name(), iso.Level())
-	}
 	r, ok := iso.(Report)
-	if !ok || r.Requested() != Suite || r.Effective() != Dorm {
-		t.Fatalf("report = %+v ok=%v", r, ok)
+	if !ok {
+		t.Fatalf("New(auto) does not implement Report: %T", iso)
+	}
+	if r.Requested() != Suite {
+		t.Errorf("Requested() = %s, want %s (auto)", r.Requested(), Suite)
+	}
+	if r.Effective() != iso.Level() || r.Effective() != r.Ceiling() {
+		t.Errorf("auto must land on the ceiling: effective=%s level=%s ceiling=%s",
+			r.Effective(), iso.Level(), r.Ceiling())
+	}
+	wantMech := map[Level]string{Dorm: "direct", Room: "landlock", Suite: "bwrap"}[iso.Level()]
+	if iso.Name() != wantMech {
+		t.Errorf("level %s served by mechanism %s, want %s", iso.Level(), iso.Name(), wantMech)
 	}
 }
