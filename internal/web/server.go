@@ -176,6 +176,10 @@ func isolationView(iso isolation.Isolator) gin.H {
 		v["requested"] = r.Requested().String()
 		v["effective"] = r.Effective().String()
 		v["ceiling"] = r.Ceiling().String()
+		// The host facts behind the ceiling, so an operator can see WHY a host
+		// tops out where it does (no Landlock? no setuid caps?) without shelling
+		// into it (docs/data-isolation.md).
+		v["host"] = r.Facts()
 	}
 	return v
 }

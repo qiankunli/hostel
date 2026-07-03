@@ -70,14 +70,14 @@ type uidIso struct {
 	self string // hostel binary, re-execed as the uid-dropper
 }
 
-func newUID(workspaceRoot string) Isolator {
+func newUID(facts HostFacts, workspaceRoot string) Isolator {
 	self, err := os.Executable()
 	if err != nil {
 		return unavailable{name: "uid", lvl: Room}
 	}
 	// Missing caps isn't an error — many environments simply don't grant them;
 	// the resolver falls through to the next mechanism and logs honestly.
-	if miss := missingUIDCaps(); miss != "" {
+	if miss := missingUIDCaps(facts); miss != "" {
 		return unavailable{name: "uid", lvl: Room}
 	}
 	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
@@ -98,36 +98,19 @@ var capsForUID = []struct {
 	bit  uint
 	name string
 }{
-	{0, "CAP_CHOWN"}, {6, "CAP_SETGID"}, {7, "CAP_SETUID"},
+	{capCHOWN, "CAP_CHOWN"}, {capSETGID, "CAP_SETGID"}, {capSETUID, "CAP_SETUID"},
 }
 
 // missingUIDCaps returns a comma-joined list of the required caps absent from
-// the effective set ("" = all present).
-func missingUIDCaps() string {
-	eff, err := effectiveCaps()
-	if err != nil {
-		return err.Error()
-	}
+// the host's effective set ("" = all present), read from the shared HostFacts.
+func missingUIDCaps(facts HostFacts) string {
 	var miss []string
 	for _, c := range capsForUID {
-		if eff&(1<<c.bit) == 0 {
+		if !facts.HasCap(c.bit) {
 			miss = append(miss, c.name)
 		}
 	}
 	return strings.Join(miss, ",")
-}
-
-func effectiveCaps() (uint64, error) {
-	data, err := os.ReadFile("/proc/self/status")
-	if err != nil {
-		return 0, err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(line, "CapEff:"); ok {
-			return strconv.ParseUint(strings.TrimSpace(v), 16, 64)
-		}
-	}
-	return 0, errors.New("CapEff not found in /proc/self/status")
 }
 
 // uidSmoke proves the mechanism bites, using the exact production form: prepare

@@ -41,16 +41,29 @@ func TestBedUIDDeterministicAndRanged(t *testing.T) {
 	}
 }
 
-// missingUIDCaps must read /proc/self/status without error and, when caps are
-// absent, name them — the honest-degrade signal the resolver relies on.
-func TestMissingUIDCapsParses(t *testing.T) {
-	miss := missingUIDCaps()
-	t.Logf("missing uid caps here: %q", miss)
-	// Under an unprivileged test runner at least one cap is absent; under root
-	// none are. Both are valid — we only assert it didn't error out (an error
-	// would surface as the error string, which contains no CAP_ token).
-	if _, err := effectiveCaps(); err != nil {
-		t.Fatalf("effectiveCaps: %v", err)
+// missingUIDCaps reads the shared HostFacts and names the absent caps — the
+// honest-degrade signal the resolver relies on. Cross-check it against the live
+// facts so the cap-bit wiring can't silently drift.
+func TestMissingUIDCaps(t *testing.T) {
+	facts := collectHostFacts()
+	miss := missingUIDCaps(facts)
+	t.Logf("effective caps %#x, missing uid caps: %q", facts.EffectiveCaps, miss)
+	wantAllPresent := facts.HasCap(capCHOWN) && facts.HasCap(capSETGID) && facts.HasCap(capSETUID)
+	if wantAllPresent != (miss == "") {
+		t.Fatalf("missingUIDCaps=%q but HasCap(all)=%v — cap-bit wiring drifted", miss, wantAllPresent)
+	}
+}
+
+// collectHostFacts must probe without panicking and yield self-consistent facts
+// on any Linux host (root or not).
+func TestCollectHostFactsSane(t *testing.T) {
+	f := collectHostFacts()
+	t.Logf("host facts: %+v", f)
+	if f.KernelRelease == "" {
+		t.Error("KernelRelease empty on Linux (uname should populate it)")
+	}
+	if f.LandlockABI < 0 {
+		t.Errorf("LandlockABI = %d, must be >= 0", f.LandlockABI)
 	}
 }
 
