@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -41,10 +42,16 @@ import (
 var version = "dev"
 
 func main() {
-	// Landlock confiner re-exec (the room mechanism): before anything else,
-	// since the argv is `hostel __confine <dataDir> -- <cmd>...`, not flags.
-	if len(os.Args) >= 2 && os.Args[1] == isolation.ConfineArg {
-		os.Exit(runConfine(os.Args[2:]))
+	// Isolation re-exec confiners (room mechanisms): before anything else, since
+	// the argv is `hostel <subcmd> ... -- <cmd>...`, not flags. The daemon must
+	// keep its privileges, so both mechanisms confine a self-re-exec, not hostel.
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case isolation.ConfineArg: // landlock: __confine <dataDir> -- <cmd>...
+			os.Exit(runConfine(os.Args[2:]))
+		case isolation.AsUserArg: // uid: __asuser <uid> <dataDir> -- <cmd>...
+			os.Exit(runAsUser(os.Args[2:]))
+		}
 	}
 
 	cfg := config.Load(os.Args[1:])
@@ -202,6 +209,50 @@ func runConfine(args []string) int {
 	}
 	if err := syscall.Exec(path, cmd, os.Environ()); err != nil {
 		fmt.Fprintf(os.Stderr, "hostel __confine: exec %s: %v\n", path, err)
+		return 126
+	}
+	return 0 // unreachable
+}
+
+// runAsUser implements `hostel __asuser <uid> <dataDir> -- <cmd> <args>...`:
+// drop THIS process to the bed uid (and no_new_privs), enter the data dir, then
+// exec the real command so it inherits the reduced identity. Returns a process
+// exit code (only on error; success replaces the process image).
+func runAsUser(args []string) int {
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	// Need at least <uid> <dataDir> before the "--", and a command after it.
+	if sep < 2 || sep+1 >= len(args) {
+		fmt.Fprintln(os.Stderr, "hostel __asuser: usage: __asuser <uid> <dataDir> -- <cmd>...")
+		return 2
+	}
+	uid, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hostel __asuser: bad uid %q: %v\n", args[0], err)
+		return 2
+	}
+	dataDir := args[1]
+	cmd := args[sep+1:]
+
+	if err := isolation.ApplyAsUser(uid, dataDir); err != nil {
+		fmt.Fprintf(os.Stderr, "hostel __asuser: %v\n", err)
+		return 1
+	}
+	path, err := exec.LookPath(cmd[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hostel __asuser: %s: %v\n", cmd[0], err)
+		return 127
+	}
+	// The bed uid has no /etc/passwd entry; give tools a sane HOME (its own
+	// workspace) and USER so bash and friends don't choke on the unknown uid.
+	env := append(os.Environ(), "HOME="+dataDir, "USER=hostel-bed", "LOGNAME=hostel-bed")
+	if err := syscall.Exec(path, cmd, env); err != nil {
+		fmt.Fprintf(os.Stderr, "hostel __asuser: exec %s: %v\n", path, err)
 		return 126
 	}
 	return 0 // unreachable

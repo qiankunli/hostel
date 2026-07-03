@@ -144,12 +144,42 @@ effective = min(requested, ceiling)
 - **仅 FS**（+ 高版本部分 net/ipc）：不带 pid/uts/ipc/net namespace——那些是安全纵深，不是数据隔离。
 - 必须在把控制权交给不可信代码**前** apply，且不能限制已打开的 fd。
 
+### room 档第二实现（uid，Unix DAC）
+
+landlock 依赖内核编译了 `CONFIG_SECURITY_LANDLOCK`，我们两个真实环境都不满足（devbox bsk 5.15、test 集群 stock 5.4 均无）。uid 机制补上这个格子：**不需要任何特殊内核，只借最古老的 Unix DAC**，把 room 保证换一种方式兑现。
+
+原理（锚点 `uid_linux.go`）：
+
+- **每个 bed 一个专属 uid**，其 `data/` 目录 `0700` 且 `chown` 给该 uid。bed B（uid_B）穿越 `{root}/bedA/data` 时内核在这一级判 EACCES——判定发生在**目录穿越**，与里面文件权限无关。`{root}/bedA` 本身 `0755`，所以兄弟**门牌可见、房间进不去**，正是 room 语义。
+- **uid 派生自 data 目录路径**（`bedUID` = 高位段 hash，无注册表）：`Prepare`（chown）与 `Wrap`（setuid）各自独立算出同一个 uid，无共享状态、跨重启稳定。两个 bed 撞同一 uid 可能但罕见，撞了只是这一对退化成互相可读（dorm），不会崩——已在注释和本节记录。
+- **比 landlock 多送一层进程边界**：uid 不只挡文件，跨 uid 的 `kill`/`ptrace`/读 `/proc/<pid>/environ` 内核一并拒绝——兄弟 bed 的进程杀不掉、内存偷不到、环境变量（常含密钥）读不到。landlock 只管 FS。
+
+三个必须处理的工程点：
+
+1. **setuid 后门**：镜像里的 setuid-root 程序（`su`/`mount`/`passwd`…test 镜像实测就有 9 个）会让降权后的 bed 一执行就升回 root。`__asuser` re-exec 里在 `setuid` 前置 `PR_SET_NO_NEW_PRIVS`——设了之后 setuid 位失效，后门一次性封死（真机已验 bed 进程 `NoNewPrivs:1`）。
+2. **降权顺序**：`setgroups(空) → setgid → no_new_privs → setuid → chdir`，每个特权步骤必须在丢掉对应能力**之前**跑（丢了 uid 就没权限再改 gid/组）。Go 的 `SysProcAttr.Credential` 会做对这套舞蹈，但我们要内联 NNP，故走 re-exec 自己实现（与 landlock `__confine` 同构）。
+3. **daemon 侧读回**：`Prepare` 把 data 目录整棵 chown 给 bed uid。daemon 若是 root，跨 bed 的 file API / persist 读取不受 `0700` 影响；若 daemon 非 root（setcap 形态），额外需要 `CAP_DAC_READ_SEARCH`——见下方能力矩阵。
+
+**已知限制（待跟进）**：file API（fsops，以 daemon 身份落盘）写入的文件属主是 daemon，不是 bed uid——bed 能读（world-readable）但改不了，要到下次激活 `Prepare` 重新 chown 才归位。彻底解法是让 fsops 写完按 workspace 目录属主 chown（机制无关的不变式："写进 bed workspace 的文件继承该目录的属主"），作为独立跟进。
+
+环境能力 → 机制矩阵（`New` 的探测顺序 bwrap → landlock → uid → direct）：
+
+| 环境给了什么 | 能到的档 / 机制 | daemon 全程特权？ |
+|---|---|---|
+| userns / `CAP_SYS_ADMIN` | suite / bwrap | 否（userns 免特权） |
+| 内核有 Landlock（≥5.13 且编译） | room / landlock | 否（进程自缚，零 cap） |
+| `CAP_SETUID+SETGID+CHOWN`（root 或 setcap 二进制） | room / uid | 是（非 root 形态另需 `CAP_DAC_READ_SEARCH` 做读回） |
+| 什么都没有 | dorm（fsops API 层 confine 仍在） | —— |
+
+注意 **landlock 是唯一"daemon 全程零特权"就能立墙的机制**；uid 的定位是"内核太老没 landlock、但能拿到 setuid 能力"这个格子的填充，不是无特权方案。
+
 ### 实现状态
 
-**三档全部实装**（`internal/isolation/`）：
+**三档全部实装，room 双机制**（`internal/isolation/`）：
 - 房型路由 `New(requested, root)`：`effective = 请求 ≤ 内最高可达档`；每个机制 boot 时探可用性，`unavailable` 标记保留 Level 以便算 ceiling；解析结果日志 + capabilities/healthz 报 `isolation.{level,mechanism,requested,effective,ceiling}` + `workspace_mount`。
 - **room = landlock**（`landlock_linux.go`）：boot 探测两级——`LandlockGetABIVersion()≥1` 之外再跑**全形态 smoke**（bwrap 同款哲学：ABI 在场 ≠ 真在执行。用真实 `__confine` 形态确认自己目录可写、假兄弟目录不可读，抓 `BestEffort` 静默 no-op 和 workspace-root 落在 `/tmp` 等共享 RW 路径下的假隔离，探不过诚实降级）；机制 `Wrap` 前缀 `hostel __confine <bedData> --`，`main` 的 `__confine` 子命令 `landlock.V9.BestEffort().RestrictPaths(RODirs 系统路径, RWDirs bedData+/tmp+/dev)` 后 `syscall.Exec`——与 bwrap 外部前缀同构，参考 `../greywall`。
 - 解析规则纯逻辑单测（`resolve_test.go`，注入可用性矩阵，mac 可跑）；**landlock 真机隔离验证待 landlock-enabled 环境**——devbox 已排除：bsk 定制内核（5.15.120.bsk.3）未编译 `CONFIG_SECURITY_LANDLOCK`，内核版本 ≥5.13 不是充分条件，容器共享宿主内核也绕不过；换 stock 内核（Debian 12 / Ubuntu 22.04+，`/sys/kernel/security/lsm` 含 `landlock`）即可验。devbox 上已真机验证的部分：请求 room 时的诚实降级上报（requested/effective/ceiling 四元组）与 dorm 负面对照。
-- per-bed uid 机制仍未做（room 的第二实现，更后）。
+- **room = uid**（`uid_linux.go`）：boot 探测两级——`CapEff` 读 `/proc/self/status` 确认 `CAP_SETUID/SETGID/CHOWN`（快速失败），再跑**全形态 smoke**（landlock 同款哲学：cap 在场 ≠ setuid 真能用。准备两个不同 uid 的兄弟目录、以其一 `__asuser` 跑，验证自己目录可写、兄弟 secret EACCES，抓被 seccomp 静默挡掉的 setuid）；`Wrap` 前缀 `hostel __asuser <uid> <bedData> --`，`main` 的 `__asuser` 子命令降权 + NNP 后 `syscall.Exec`；`Prepare`（`isolation.Preparer` 可选接口，bed manager 在 Resolve 里调）chown data 目录。**test 集群真机验证已通过**（a-test sandbox pod，root / 内核 5.4 无 landlock：请求 room → 选中 uid 机制，两 bed 不同 uid、跨 bed 数据 EACCES、门牌可见、`NoNewPrivs:1` 封 setuid 后门，全 PASS）。
+- 纯逻辑单测（`uid_linux_test.go`：uid 派生确定性/范围、cap 解析、chown——非 root 部分 skip）；机制的完整 re-exec 验证同 landlock，只在真机 boot smoke 与 pod 里跑。
 
-依赖：`github.com/landlock-lsm/go-landlock`（仅 linux 文件引用，非 linux 走 `landlock_other.go` 报 room unavailable）。
+依赖：`github.com/landlock-lsm/go-landlock`（landlock，仅 linux）、`golang.org/x/sys/unix`（uid 的 `PR_SET_NO_NEW_PRIVS`）；非 linux 走各自 `*_other.go` 报 room unavailable。
