@@ -21,7 +21,10 @@ import "strings"
 
 // BwrapMountPoint is where a bed's workspace is bind-mounted inside the
 // sandbox. Fixed and canonical: it makes shell paths and file-API paths the
-// same string, matching OpenSandbox SDK expectations.
+// same string, matching OpenSandbox SDK expectations. Must stay equal to
+// fsops.VirtualPrefix (the same contract seen from the file-API side); the
+// packages deliberately don't import each other, so keep the two constants
+// in sync by hand.
 const BwrapMountPoint = "/workspace"
 
 // buildBwrapArgs assembles the bwrap argv (between the binary and the user
