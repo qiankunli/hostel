@@ -243,7 +243,7 @@ func (f *fakeStore) generation(id string) int64 {
 	return f.gens[id]
 }
 
-func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
+func TestEvictLeavesLuggageAndWarmResume(t *testing.T) {
 	root := t.TempDir()
 	fs := newFakeStore()
 	m, err := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
@@ -251,7 +251,8 @@ func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
 		t.Fatalf("NewManager: %v", err)
 	}
 
-	// Write data into a bed, delete it → snapshot taken, workspace gone.
+	// Write data into a bed, evict it → snapshot taken, local dir stays
+	// behind as luggage.
 	b, _ := m.Resolve("conv-1")
 	if err := os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("payload"), 0o644); err != nil {
 		t.Fatal(err)
@@ -259,20 +260,84 @@ func TestPersistOnDeleteAndRestoreOnCreate(t *testing.T) {
 	if ok, err := m.Evict("conv-1"); err != nil || !ok {
 		t.Fatalf("Evict: ok=%v err=%v", ok, err)
 	}
-	if _, err := os.Stat(b.Dir); !os.IsNotExist(err) {
-		t.Fatal("bed dir should be removed after evict")
+	if _, err := os.Stat(filepath.Join(b.Dir, "meta.json")); err != nil {
+		t.Fatalf("luggage should remain after evict: %v", err)
 	}
 	if string(fs.snaps["conv-1"]) != "payload" {
 		t.Fatalf("snapshot content = %q", fs.snaps["conv-1"])
 	}
+	meta, ok := loadMeta(b.Dir)
+	if !ok || meta.LastUsedAt.IsZero() {
+		t.Fatalf("luggage meta should carry LastUsedAt, got %+v (ok=%v)", meta, ok)
+	}
 
-	// Re-resolve the same bed id → restored before serving.
+	// Re-resolve the same bed id → warm start from luggage: the real file is
+	// still there and Restore was never called (no marker).
 	b2, err := m.Resolve("conv-1")
 	if err != nil {
 		t.Fatalf("re-Resolve: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "data.txt")); err != nil {
+		t.Fatalf("warm resume lost workspace data: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err == nil {
+		t.Fatal("fresh luggage must not be re-restored from the store")
+	}
+}
+
+// A luggage copy whose generation is behind the snapshot (the bed ran on
+// another instance meanwhile) must be discarded and re-restored, never served.
+func TestStaleLuggageDiscardedOnResume(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-s")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("old"), 0o644)
+	if ok, err := m.Evict("conv-s"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
+	}
+
+	// Another hostel persisted a newer snapshot.
+	fs.mu.Lock()
+	fs.gens["conv-s"] = fs.gens["conv-s"] + 1
+	fs.mu.Unlock()
+
+	b2, err := m.Resolve("conv-s")
+	if err != nil {
+		t.Fatalf("re-Resolve: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err != nil {
-		t.Fatalf("restore marker missing: %v", err)
+		t.Fatalf("stale luggage should be replaced by a restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "data.txt")); err == nil {
+		t.Fatal("stale luggage content must not survive")
+	}
+}
+
+// Without luggage (cold resume on a different/cleaned instance), the snapshot
+// is restored before serving.
+func TestColdResumeRestoresFromSnapshot(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	b, _ := m.Resolve("conv-c")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("payload"), 0o644)
+	if ok, err := m.Evict("conv-c"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
+	}
+	// Simulate luggage GC / another instance: no local copy.
+	if err := os.RemoveAll(b.Dir); err != nil {
+		t.Fatal(err)
+	}
+
+	b2, err := m.Resolve("conv-c")
+	if err != nil {
+		t.Fatalf("re-Resolve: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err != nil {
+		t.Fatalf("cold resume should restore from snapshot: %v", err)
 	}
 }
 
@@ -435,16 +500,22 @@ func TestPurgeEndsIdentity(t *testing.T) {
 	if info, _ := fs.Stat(context.Background(), "conv-p"); info == nil {
 		t.Fatal("snapshot should exist after evict (DORMANT)")
 	}
-	// Purge the dormant bed: snapshot gone, resolve starts fresh.
+	// Purge the dormant bed: snapshot AND luggage gone, resolve starts fresh.
 	if err := m.Purge("conv-p"); err != nil {
 		t.Fatalf("Purge: %v", err)
 	}
 	if info, _ := fs.Stat(context.Background(), "conv-p"); info != nil {
 		t.Fatal("snapshot should be deleted after purge")
 	}
+	if _, err := os.Stat(b.Dir); !os.IsNotExist(err) {
+		t.Fatal("luggage should be removed after purge")
+	}
 	b2, _ := m.Resolve("conv-p")
 	if _, err := os.Stat(filepath.Join(b2.Workspace, "restored.txt")); err == nil {
 		t.Fatal("purged bed must start empty, not restored")
+	}
+	if _, err := os.Stat(filepath.Join(b2.Workspace, "data.txt")); err == nil {
+		t.Fatal("purged bed must not resurrect old luggage data")
 	}
 	// Default bed is not purgeable.
 	if err := m.Purge("default"); err == nil {

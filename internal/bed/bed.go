@@ -170,18 +170,29 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if err := os.MkdirAll(bedDir, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create bed dir %s: %w", bedDir, err)
 	}
-	// Resume-from-snapshot: if the bed has a durable copy, hydrate BEFORE
-	// serving (snapshot = portable meta + data). A restore failure fails the
+	// Resume: prefer the local copy (luggage) when its generation says it is
+	// at least as new as the snapshot — evict→resume on the same instance
+	// then costs no download. A stale local copy (the bed ran elsewhere
+	// meanwhile) is discarded, never merged. A restore failure fails the
 	// resolve — silently starting empty when a snapshot exists would look
 	// like data loss.
 	restored := false
 	if info, err := m.store.Stat(context.Background(), id); err != nil {
 		return nil, fmt.Errorf("bed: check snapshot %s: %w", id, err)
 	} else if info != nil {
-		if err := m.store.Restore(context.Background(), id, bedDir); err != nil {
-			return nil, fmt.Errorf("bed: restore %s: %w", id, err)
+		local, ok := loadMeta(bedDir)
+		if !ok || local.Generation < info.Generation {
+			if err := os.RemoveAll(bedDir); err != nil {
+				return nil, fmt.Errorf("bed: drop stale luggage %s: %w", id, err)
+			}
+			if err := os.MkdirAll(bedDir, 0o755); err != nil {
+				return nil, fmt.Errorf("bed: recreate bed dir %s: %w", bedDir, err)
+			}
+			if err := m.store.Restore(context.Background(), id, bedDir); err != nil {
+				return nil, fmt.Errorf("bed: restore %s: %w", id, err)
+			}
+			restored = true
 		}
-		restored = true
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace %s: %w", dataDir, err)
@@ -231,12 +242,13 @@ func (m *Manager) List() []*Bed {
 
 // Evict releases a bed's compute while keeping its identity (ACTIVE →
 // EVICTING → DORMANT, docs/persistence.md §4): persist, then tear down and
-// free the max-beds slot. Returns evicted=false without error when the
-// eviction was CANCELED because the bed saw new activity during the persist
-// window — serving beats reclaiming, and removing the workspace after a
-// mid-persist write would silently drop that write. A persist failure aborts
-// the evict (never destroy the only copy). The default bed keeps its
-// workspace (runtime state resets only).
+// free the max-beds slot. The local dir stays behind as luggage — a warm
+// cache of the DORMANT bed, so a same-instance resume skips the snapshot
+// download; luggage GC reclaims disk separately. Returns evicted=false
+// without error when the eviction was CANCELED because the bed saw new
+// activity during the persist window — serving beats reclaiming, and
+// removing runtime state after a mid-persist write would silently drop that
+// write. A persist failure aborts the evict (never destroy the only copy).
 func (m *Manager) Evict(id string) (bool, error) {
 	if id == "" {
 		id = m.defaultBed
@@ -280,25 +292,35 @@ func (m *Manager) Evict(id string) (bool, error) {
 	delete(m.beds, id)
 	m.mu.Unlock()
 	m.teardown(b)
-	if id == m.defaultBed {
-		b.mu.Lock()
-		b.evicting = false
-		b.mu.Unlock()
-		return true, nil
+	// Stamp the luggage with its last activity so luggage GC can order cold
+	// copies by recency with no in-memory state. Best-effort — a missing
+	// stamp only weakens GC ordering, never correctness.
+	if meta, ok := loadMeta(b.Dir); ok {
+		meta.LastUsedAt = watermark
+		_ = saveMeta(b.Dir, meta)
 	}
-	return true, os.RemoveAll(b.Dir)
+	b.mu.Lock()
+	b.evicting = false
+	b.mu.Unlock()
+	return true, nil
 }
 
 // ErrPurgeDefault marks a client mistake (4xx), not a server failure: the
 // default bed is the single-tenant fallback and cannot be purged.
 var ErrPurgeDefault = errors.New("bed: refusing to purge the default bed")
 
-// Purge ends a bed's identity: tear down (no persist), remove the local dir,
-// and delete the snapshot. Explicitly destructive — the caller asked for the
-// data to be gone, so concurrent activity does not cancel it.
+// Purge ends a bed's identity: tear down (no persist), remove the local dir
+// (active workspace or leftover luggage), and delete the snapshot. Explicitly
+// destructive — the caller asked for the data to be gone, so concurrent
+// activity does not cancel it.
 func (m *Manager) Purge(id string) error {
 	if id == "" || id == m.defaultBed {
 		return ErrPurgeDefault
+	}
+	// Purge touches the filesystem even for beds not in memory (luggage), so
+	// the id must be validated here too — never path-join an unchecked id.
+	if err := validBedID(id); err != nil {
+		return err
 	}
 	m.mu.Lock()
 	b, ok := m.beds[id]
@@ -308,9 +330,10 @@ func (m *Manager) Purge(id string) error {
 	m.mu.Unlock()
 	if ok {
 		m.teardown(b)
-		if err := os.RemoveAll(b.Dir); err != nil {
-			return err
-		}
+	}
+	// DORMANT beds may leave luggage (same path as an active bed's dir).
+	if err := os.RemoveAll(filepath.Join(m.root, id)); err != nil {
+		return err
 	}
 	// DORMANT (or never-existed) beds still have a snapshot to remove.
 	return m.store.Delete(context.Background(), id)
