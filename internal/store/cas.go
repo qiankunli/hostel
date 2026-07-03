@@ -28,11 +28,11 @@ import (
 	"github.com/folbricht/desync"
 )
 
-// casStore is the content-addressed backend (docs/persistence.md §3.3): the
-// bed dir is serialized to a catar stream (desync, the casync model), CDC-
-// chunked, and only chunks absent from the bed's previous snapshot are
-// uploaded. The index object is the commit point and carries the generation,
-// exactly like the tarball backend's single object.
+// casStore is the s3 backend (docs/persistence.md §3.3): the bed dir is
+// serialized to a catar stream (desync, the casync model), CDC-chunked, and
+// only chunks absent from the bed's previous snapshot are uploaded. The index
+// object is the commit point and carries the generation, so one small PUT
+// makes the whole snapshot visible atomically.
 //
 // The blob space is PER BED (<prefix>/cas/<bedID>/...): no cross-bed dedup,
 // but GC stays a local diff ("chunks not referenced by the committed index")
@@ -74,7 +74,7 @@ func newCAS(ctx context.Context, cfg Config) (Store, error) {
 	return &casStore{obj: &s3obj{client: client, bucket: cfg.Bucket}, prefix: cfg.Prefix}, nil
 }
 
-func (s *casStore) Name() string { return "cas" }
+func (s *casStore) Name() string { return "s3" }
 
 func (s *casStore) indexKey(bedID string) string {
 	return path.Join(s.prefix, "cas", bedID+".caibx")
@@ -93,7 +93,7 @@ func (s *casStore) Stat(ctx context.Context, bedID string) (*SnapshotInfo, error
 		return nil, err
 	}
 	info := &SnapshotInfo{}
-	// Same tolerance as the tarball backend: unparsable metadata reads as 0.
+	// Unparsable metadata tolerantly reads as 0 (treated as oldest).
 	if g, err := strconv.ParseInt(meta[generationMetaKey], 10, 64); err == nil {
 		info.Generation = g
 	}
@@ -104,9 +104,9 @@ func (s *casStore) Stat(ctx context.Context, bedID string) (*SnapshotInfo, error
 }
 
 func (s *casStore) Persist(ctx context.Context, bedID, dir string, generation int64) error {
-	// Fencing parity with the tarball backend (docs/persistence.md §3.5):
-	// remote generation >= ours means another instance persisted this bed
-	// after our activation — refuse rather than silently overwrite.
+	// Fencing guard (docs/persistence.md §3.5): remote generation >= ours
+	// means another instance persisted this bed after our activation —
+	// refuse rather than silently overwrite.
 	prevMeta, _, prevExists, err := s.obj.head(ctx, s.indexKey(bedID))
 	if err != nil {
 		return fmt.Errorf("store: persist %s: pre-write stat: %w", bedID, err)
@@ -332,8 +332,7 @@ func (s *casObjStore) Close() error   { return nil }
 func (s *casObjStore) String() string { return "cas:" + s.prefix }
 
 // filteredFS wraps a FilesystemReader and drops top-level *.local entries —
-// the host-private convention shared with the tarball backend
-// (docs/persistence.md §4).
+// the host-private convention (docs/persistence.md §4).
 type filteredFS struct {
 	inner desync.FilesystemReader
 	root  string

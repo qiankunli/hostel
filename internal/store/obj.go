@@ -19,10 +19,37 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// s3OpTimeout bounds a single object operation. Generous: chunk transfers can
+// ride slow links; lifecycle callers pass Background contexts.
+const s3OpTimeout = 5 * time.Minute
+
+// generationMetaKey is the S3 user-metadata key carrying the bed generation
+// (served back by HEAD, so Stat never downloads the snapshot). The SDK strips
+// the x-amz-meta- prefix and lowercases keys on read.
+const generationMetaKey = "generation"
+
+// newS3Client builds the shared S3-compatible client.
+func newS3Client(ctx context.Context, cfg Config) (*s3.Client, error) {
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: aws config: %w", err)
+	}
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.Endpoint != "" {
+			o.BaseEndpoint = &cfg.Endpoint
+			// S3-compatible stores (MinIO/TOS/Ceph) generally want
+			// path-style addressing rather than virtual-hosted buckets.
+			o.UsePathStyle = true
+		}
+	}), nil
+}
 
 // objAPI is the minimal object-storage surface the cas backend needs. It
 // exists so the cas persist/restore/GC logic — the part with actual room for
