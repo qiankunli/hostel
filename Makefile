@@ -1,4 +1,4 @@
-.PHONY: help build test vet fmt lint tidy run run-bwrap linux smoke image image-lean image-multiarch clean
+.PHONY: help build test vet fmt lint tidy check run run-bwrap linux smoke image image-lean image-multiarch clean
 
 BIN       := bin/hostel
 ADDR      := :8872
@@ -13,8 +13,10 @@ help: ## List available targets
 build: ## Build the hostel binary for the current platform
 	go build -o $(BIN) ./cmd/hostel
 
-test: ## Run all tests
-	go test ./...
+# -race is non-negotiable here: shells, bed lifecycle and cas uploads are all
+# concurrent; -count=1 keeps the detector from being skipped by the test cache.
+test: ## Run all tests with the race detector
+	go test -race -count=1 ./...
 
 vet: ## Run go vet
 	go vet ./...
@@ -27,6 +29,9 @@ lint: vet ## gofmt check + go vet (CI gate)
 
 tidy: ## Sync go.mod/go.sum
 	go mod tidy
+
+check: tidy lint build test ## Pre-commit gate: tidy + lint + build + race tests
+	@echo "check passed"
 
 run: build ## Run locally with no isolation (dev, any platform)
 	$(BIN) --isolation dorm --workspace-root $(WS_ROOT) --addr $(ADDR)
