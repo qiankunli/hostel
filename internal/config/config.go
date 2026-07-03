@@ -53,7 +53,9 @@ type Config struct {
 
 	// Workspace persistence (docs/persistence.md). Backend "noop" disables;
 	// "s3" snapshots each bed to <bucket>/<prefix>/<bedID>.tar.gz at lifecycle
-	// boundaries. Credentials resolve via the standard AWS SDK chain.
+	// boundaries; "cas" stores content-addressed chunks under <prefix>/cas/
+	// and transfers incrementally. Both use the S3* fields below; credentials
+	// resolve via the standard AWS SDK chain.
 	StoreBackend string
 	S3Bucket     string
 	S3Prefix     string
@@ -92,7 +94,7 @@ func Load(args []string) *Config {
 	idle := fs.Duration("bed-idle-timeout", envDur("HOSTEL_BED_IDLE_TIMEOUT", 30*time.Minute), "reap a bed after this idle duration (0=never)")
 	fs.IntVar(&c.MaxBeds, "max-beds", envInt("HOSTEL_MAX_BEDS", 0), "max concurrent beds, 0=unlimited (default bed exempt)")
 	fs.StringVar(&c.StoreBackend, "store", envStr("HOSTEL_STORE", "noop"), "workspace persistence backend: noop | s3 (tarball) | cas (incremental chunks)")
-	fs.StringVar(&c.S3Bucket, "s3-bucket", envStr("HOSTEL_S3_BUCKET", ""), "S3 bucket for bed snapshots (store=s3)")
+	fs.StringVar(&c.S3Bucket, "s3-bucket", envStr("HOSTEL_S3_BUCKET", ""), "S3 bucket for bed snapshots (store=s3 | cas)")
 	fs.StringVar(&c.S3Prefix, "s3-prefix", envStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")
 	fs.StringVar(&c.S3Endpoint, "s3-endpoint", envStr("HOSTEL_S3_ENDPOINT", ""), "S3-compatible endpoint (empty = AWS)")
 	persist := fs.Duration("persist-interval", envDur("HOSTEL_PERSIST_INTERVAL", 0), "periodic snapshot interval, 0=lifecycle boundaries only")
