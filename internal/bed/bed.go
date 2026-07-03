@@ -175,9 +175,9 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	// resolve — silently starting empty when a snapshot exists would look
 	// like data loss.
 	restored := false
-	if ok, err := m.store.Exists(context.Background(), id); err != nil {
+	if info, err := m.store.Stat(context.Background(), id); err != nil {
 		return nil, fmt.Errorf("bed: check snapshot %s: %w", id, err)
-	} else if ok {
+	} else if info != nil {
 		if err := m.store.Restore(context.Background(), id, bedDir); err != nil {
 			return nil, fmt.Errorf("bed: restore %s: %w", id, err)
 		}
@@ -331,18 +331,30 @@ func (m *Manager) teardown(b *Bed) {
 
 // persistBed snapshots the bed dir (portable meta + data) and, on success,
 // advances both the in-memory and on-disk persistence watermarks.
+//
+// Ordering constraint: the generation bump is saved BEFORE packing (the
+// snapshot must carry its own generation), but LastPersistedAt only AFTER a
+// successful upload — a failed upload leaving the local generation ahead is
+// accurate ("locally dirty"), while a falsely-advanced LastPersistedAt would
+// make restart-time dirty tracking skip data that never reached the store.
 func (m *Manager) persistBed(ctx context.Context, b *Bed) error {
-	if err := m.store.Persist(ctx, b.ID, b.Dir); err != nil {
+	meta, ok := loadMeta(b.Dir)
+	if !ok {
+		meta = bedMeta{Version: 1, BedID: b.ID, CreatedAt: b.CreatedAt}
+	}
+	meta.Generation++
+	if err := saveMeta(b.Dir, meta); err != nil {
+		return fmt.Errorf("bed: bump generation %s: %w", b.ID, err)
+	}
+	if err := m.store.Persist(ctx, b.ID, b.Dir, meta.Generation); err != nil {
 		return err
 	}
 	now := time.Now()
 	b.mu.Lock()
 	b.persistedAt = now
 	b.mu.Unlock()
-	if meta, ok := loadMeta(b.Dir); ok {
-		meta.LastPersistedAt = now
-		_ = saveMeta(b.Dir, meta) // best-effort; in-memory watermark is set
-	}
+	meta.LastPersistedAt = now
+	_ = saveMeta(b.Dir, meta) // best-effort; in-memory watermark is set
 	return nil
 }
 

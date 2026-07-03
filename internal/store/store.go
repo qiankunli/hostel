@@ -25,22 +25,35 @@ import (
 	"fmt"
 )
 
+// SnapshotInfo describes a bed's durable snapshot without downloading it.
+type SnapshotInfo struct {
+	// Generation is the snapshot's persist counter (mirrors the bed meta's
+	// generation, carried in backend metadata so Stat stays cheap). A local
+	// copy with generation >= this is current and can skip Restore.
+	Generation int64
+	// Bytes is the packed snapshot size (0 when the backend can't tell).
+	Bytes int64
+}
+
 // Store is the persistence backend for bed workspaces. Implementations must
 // treat Persist as atomic per bed (a reader never sees a half-written
 // snapshot) — the tarball-per-bed layout gives this for free on S3.
 type Store interface {
 	// Name reports the backend for capabilities/healthz ("noop", "s3").
 	Name() string
-	// Exists reports whether a snapshot exists for the bed.
-	Exists(ctx context.Context, bedID string) (bool, error)
+	// Stat describes the bed's snapshot, or nil when none exists. Must be
+	// cheap (S3: HEAD + user metadata, no download) — luggage freshness
+	// checks call it on every resume.
+	Stat(ctx context.Context, bedID string) (*SnapshotInfo, error)
 	// Restore unpacks the bed's snapshot into dir (an existing, usually empty
 	// workspace dir). Called on bed create/resume, before serving requests.
 	Restore(ctx context.Context, bedID, dir string) error
 	// Persist snapshots dir as the bed's durable copy, replacing any previous
 	// snapshot. Called on evict, explicit checkpoint, and the periodic safety
 	// net. dir is the bed dir (portable meta + data/); top-level *.local
-	// files are host-private and excluded.
-	Persist(ctx context.Context, bedID, dir string) error
+	// files are host-private and excluded. generation is the meta's persist
+	// counter, surfaced back through Stat.
+	Persist(ctx context.Context, bedID, dir string, generation int64) error
 	// Delete removes the bed's snapshot — the purge path: after this the bed
 	// identity no longer exists anywhere. Deleting a missing snapshot is not
 	// an error.
@@ -76,8 +89,8 @@ func New(ctx context.Context, cfg Config) (Store, error) {
 // upstream platform persists workspaces some other way).
 type Noop struct{}
 
-func (Noop) Name() string                                  { return "noop" }
-func (Noop) Exists(context.Context, string) (bool, error)  { return false, nil }
-func (Noop) Restore(context.Context, string, string) error { return nil }
-func (Noop) Persist(context.Context, string, string) error { return nil }
-func (Noop) Delete(context.Context, string) error          { return nil }
+func (Noop) Name() string                                         { return "noop" }
+func (Noop) Stat(context.Context, string) (*SnapshotInfo, error)  { return nil, nil }
+func (Noop) Restore(context.Context, string, string) error        { return nil }
+func (Noop) Persist(context.Context, string, string, int64) error { return nil }
+func (Noop) Delete(context.Context, string) error                 { return nil }

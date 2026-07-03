@@ -37,6 +37,16 @@ type bedMeta struct {
 	// LastPersistedAt is set only after a SUCCESSFUL persist, so restart-time
 	// dirty tracking never mistakes a failed upload for a fresh snapshot.
 	LastPersistedAt time.Time `json:"last_persisted_at,omitzero"`
+	// Generation counts persist attempts, monotonically; it is the freshness
+	// token for local copies (docs/persistence.md): luggage is current iff its
+	// generation >= the snapshot's. Bumped BEFORE packing so the snapshot
+	// carries its own generation; a failed upload leaves the local copy ahead,
+	// which reads as "locally dirty" — accurate, and the next persist re-bumps.
+	// It orders snapshots where wall clocks cannot (beds migrate across hosts).
+	Generation int64 `json:"generation,omitempty"`
+	// LastUsedAt is stamped at evict time so luggage GC can order cold local
+	// copies by recency without any in-memory state.
+	LastUsedAt time.Time `json:"last_used_at,omitzero"`
 }
 
 func metaPath(bedDir string) string { return filepath.Join(bedDir, metaFile) }
