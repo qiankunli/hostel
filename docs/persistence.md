@@ -35,15 +35,20 @@ type Store interface {
 }
 ```
 
-backend：`noop`（默认，laptop 零依赖）· `s3`（S3 兼容 API：AWS / MinIO / 火山 TOS / Ceph 皆可）。配置：`--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint`（creds 走 AWS SDK 标准环境链）/ `--persist-on-idle` / `--persist-interval`。
+backend：`noop`（默认，laptop 零依赖）· `s3`（整包 tarball）· `cas`（内容寻址增量，见 §3）——后两者都走 S3 兼容 API（AWS / MinIO / 火山 TOS / Ceph），共用配置：`--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint`（creds 走 AWS SDK 标准环境链）/ `--persist-on-idle` / `--persist-interval`。
 
 ### 2. persist 触发：边界同步，不每写必传
 
 idle 超时 + delete + 显式 checkpoint + 可选周期兜底。每次写都传太吵且拿不到一致快照；周期 + on-idle 共同决定"崩溃丢多少"的窗口。
 
-### 3. 粒度：先整包 tarball，后增量
+### 3. 粒度：整包 tarball（默认演进为 cas 增量）
 
-v1.1 一个 bed 一个 tarball 对象——原子、可版本化、实现简单；**小文件海**（node_modules）恰是 per-object sync 的死穴，tarball 反而更快。接受 O(size)。后续演进：mtime+size/hash 差量（`aws s3 sync` 语义）或内容寻址去重（restic 式，历史快照便宜）。
+两个 backend 布局并存，语义相同、互不读取对方快照（切换不迁移存量）：
+
+- **`s3`（tarball）**：一个 bed 一个 tar.gz 对象——原子、实现简单；**小文件海**（node_modules）恰是 per-object sync 的死穴，tarball 反而更快。代价是每次 persist O(size) 全量重传。
+- **`cas`（内容寻址增量）**：复用 **desync 库**（casync 的 Go 实现，BSD-3；catar 序列化 + CDC 滚动哈希切块 + 并发装配都是现成的，hostel 只写对象 IO 适配和编排）。bed 目录序列化成 catar 流 → CDC 切块（64K/256K/1M）→ **只上传上代快照没有的块**（上代 index 就是"已在库"清单，未变数据零请求）→ index 对象作为提交点（携带 generation，与 tarball 的单对象语义一致）。内容没变时 catar 流稳定 → 块序列相同 → **no-op 短路**（连 index 都不写）。小文件海不再是问题：切块作用在 catar 流上，与文件数解耦。
+
+**cas 的 blob 空间按 bed 隔离**（`<prefix>/cas/<bedID>/`）：不做跨 bed 去重，换来 GC 只是"提交后删掉 index 不引用的块"的本地 diff——其正确性只依赖上层调度的单写者保证，不需要跨 manifest/跨实例的分布式清扫（restic/kopia 都只能靠显式加锁的离线 prune 解这个问题）。跨 bed 重复的大头（模板/基础工作区）留给将来的共享 base 快照，不靠 blob 级全局去重。GC 失败不算 persist 失败（快照已提交，孤儿块由下次 persist 清扫；崩溃的 persist 留下的孤儿块同理）。
 
 ### 4. 一致性：静默后快照
 
@@ -130,6 +135,7 @@ meta 对 bed 内代码**不可见**（bwrap 只 bind `data/`，root 整体被 tm
 - **生命周期已落地**（§四）：`Evict`（EVICTING 期间新活动**取消驱逐**——关掉 persist 窗口写丢竞态）、`Purge`（`DELETE ?purge=true`，default bed 拒绝）、快照根 = bed 目录（meta+data，顶层 `*.local` 排除）、`GET /v1/beds` 报 `state: active|evicting`、驱逐被并发活动取消时 API 返回 409 `BED_BUSY`
 - capabilities / healthz 报 `persistence: noop|s3`
 - **luggage 已落地**：evict 留现场 + `LastUsedAt` 盖章、`Resolve` 按 generation 判新鲜（warm start / 丢弃重拉）、`--luggage-high/low-bytes` 水位 GC（stale 优先 → LRU，rename-under-lock 防与 Resolve 竞态）、`GET /v1/inventory` 报容量与全部本机 bed；generation 存 S3 object user metadata（`Stat`=HEAD 免下载）
-- **双活冲突探测**（§三.5）：s3 `Persist` PUT 前 HEAD 比对 generation，远端更新则 `store.ErrConflict` 拒绝覆盖（first-writer-wins；evict 路径因 persist 失败自然中止，bed 留在本机继续服务）
+- **双活冲突探测**（§三.5）：s3/cas `Persist` 写前 HEAD 比对 generation，远端更新则 `store.ErrConflict` 拒绝覆盖（first-writer-wins；evict 路径因 persist 失败自然中止，bed 留在本机继续服务）
+- **cas 后端已落地**（§三.3，`internal/store/cas.go`，desync 库）：catar+CDC 流式切块上传（上代 index 做免传清单）、index 提交点带 generation/bytes metadata、块序列相同 no-op 短路、提交后按"LIST − index 引用"做 per-bed GC、restore 经 `UnTarIndex` 并发拉块（块 ID 对解压数据复核，桶内损坏在 restore 报错而不是落进 workspace；desync `LocalFS` 为 `os.Root` 背书，自带 symlink 逃逸防护）；全流程在内存 objAPI fake 上有单测（roundtrip/增量/GC/no-op/冲突/purge）
 
-与设计的两处偏差：checkpoint **暂不硬静默**（不暂停接单，调用方自选空闲点打快照）；未单设 `--persist-on-idle`（idle GC 走 Delete，persist-before-delete 天然覆盖）。s3 backend 未在本地 CI 验证（无 MinIO），tar/生命周期逻辑有单测覆盖。
+与设计的两处偏差：checkpoint **暂不硬静默**（不暂停接单，调用方自选空闲点打快照）；未单设 `--persist-on-idle`（idle GC 走 Delete，persist-before-delete 天然覆盖）。s3/cas 的真实 S3 通路未在本地 CI 验证（无 MinIO）；tar/生命周期逻辑、cas 全编排（经内存 objAPI fake）有单测覆盖。

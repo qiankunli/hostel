@@ -43,19 +43,27 @@ type s3Store struct {
 const s3OpTimeout = 5 * time.Minute
 
 func newS3(ctx context.Context, cfg Config) (Store, error) {
+	client, err := newS3Client(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &s3Store{client: client, bucket: cfg.Bucket, prefix: cfg.Prefix}, nil
+}
+
+// newS3Client is shared by the s3 (tarball) and cas backends.
+func newS3Client(ctx context.Context, cfg Config) (*s3.Client, error) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: aws config: %w", err)
 	}
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = &cfg.Endpoint
 			// S3-compatible stores (MinIO/TOS/Ceph) generally want
 			// path-style addressing rather than virtual-hosted buckets.
 			o.UsePathStyle = true
 		}
-	})
-	return &s3Store{client: client, bucket: cfg.Bucket, prefix: cfg.Prefix}, nil
+	}), nil
 }
 
 func (s *s3Store) Name() string { return "s3" }
