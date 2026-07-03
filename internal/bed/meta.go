@@ -27,6 +27,22 @@ import (
 // host-local state would use the *.local convention instead).
 const metaFile = "meta.json"
 
+// Profile is the bed's usage picture for the upstream scheduler (placement,
+// evict and migration decisions). Counters are cumulative over the bed's
+// lifetime and travel with the snapshot; rates derive from deltas between
+// inventory polls, so hostel keeps no windows. Like the rest of the
+// inventory, every value is a stale-tolerant hint, never load-bearing.
+type Profile struct {
+	// Command volume: foreground, session and background runs alike.
+	CmdCount   int64 `json:"cmd_count,omitempty"`
+	CmdTotalMs int64 `json:"cmd_total_ms,omitempty"` // wall-clock sum
+	// Node-specific: measured on the host that last ran the bed (its
+	// store/network/disk speed). After a cross-host migration they describe
+	// the previous host until re-measured here.
+	LastPersistMs int64 `json:"last_persist_ms,omitempty"`
+	LastRestoreMs int64 `json:"last_restore_ms,omitempty"`
+}
+
 // bedMeta is hostel's durable per-bed bookkeeping (docs/persistence.md §4).
 type bedMeta struct {
 	Version int    `json:"version"`
@@ -47,6 +63,10 @@ type bedMeta struct {
 	// LastUsedAt is stamped at evict time so luggage GC can order cold local
 	// copies by recency without any in-memory state.
 	LastUsedAt time.Time `json:"last_used_at,omitzero"`
+	// Profile accumulates in memory while the bed is ACTIVE and is flushed
+	// here at persist time — the snapshot carries the counters, so they
+	// survive evict/resume and migration.
+	Profile Profile `json:"profile,omitzero"`
 }
 
 func metaPath(bedDir string) string { return filepath.Join(bedDir, metaFile) }
