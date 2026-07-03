@@ -86,6 +86,10 @@ type Manager struct {
 	commands   *CommandRegistry  // one-shot commands, daemon-global ids
 	maxBeds    int               // cap on concurrent beds; 0 = unlimited
 	store      store.Store       // workspace persistence (Noop when disabled)
+	// luggage disk watermarks (bytes; high 0 = GC off). Set once at startup
+	// via SetLuggageLimits — not synchronized.
+	luggageHigh int64
+	luggageLow  int64
 
 	mu   sync.Mutex
 	beds map[string]*Bed

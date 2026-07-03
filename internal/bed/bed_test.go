@@ -566,6 +566,102 @@ func TestGenerationMonotonicAcrossPersists(t *testing.T) {
 	}
 }
 
+// Luggage GC: over the high watermark, cold copies are deleted — stale
+// generation first (pure garbage), then LRU — until under the low watermark.
+func TestCollectLuggageWatermarks(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	mkLuggage := func(id string, size int) {
+		b, _ := m.Resolve(id)
+		payload := make([]byte, size)
+		if err := os.WriteFile(filepath.Join(b.Workspace, "data.txt"), payload, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := m.Evict(id); err != nil || !ok {
+			t.Fatalf("evict %s: ok=%v err=%v", id, ok, err)
+		}
+		time.Sleep(5 * time.Millisecond) // distinct LastUsedAt ordering
+	}
+	mkLuggage("conv-old", 10_000)
+	mkLuggage("conv-mid", 10_000)
+	mkLuggage("conv-new", 10_000)
+
+	if got := len(m.ListLuggage()); got != 3 {
+		t.Fatalf("luggage count = %d, want 3", got)
+	}
+	// Below the watermark: nothing reaped.
+	m.SetLuggageLimits(100_000, 80_000)
+	if reaped := m.CollectLuggage(context.Background()); len(reaped) != 0 {
+		t.Fatalf("under watermark reaped %v, want none", reaped)
+	}
+	// Over the watermark: LRU order, stop under low. ~30KB total → target
+	// ~15KB keeps one entry (plus meta noise).
+	m.SetLuggageLimits(25_000, 15_000)
+	reaped := m.CollectLuggage(context.Background())
+	if len(reaped) != 2 || reaped[0] != "conv-old" || reaped[1] != "conv-mid" {
+		t.Fatalf("reaped %v, want [conv-old conv-mid]", reaped)
+	}
+	if got := m.ListLuggage(); len(got) != 1 || got[0].BedID != "conv-new" {
+		t.Fatalf("survivors = %+v, want conv-new", got)
+	}
+}
+
+// A stale-generation copy is reaped before fresher-but-older ones.
+func TestCollectLuggageStaleFirst(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	for _, id := range []string{"conv-a", "conv-b"} {
+		b, _ := m.Resolve(id)
+		_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), make([]byte, 10_000), 0o644)
+		if ok, err := m.Evict(id); err != nil || !ok {
+			t.Fatalf("evict %s: ok=%v err=%v", id, ok, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// conv-b is the most recent locally, but the bed ran elsewhere since —
+	// its luggage is pure garbage and must go first.
+	fs.mu.Lock()
+	fs.gens["conv-b"]++
+	fs.mu.Unlock()
+
+	m.SetLuggageLimits(15_000, 12_000)
+	reaped := m.CollectLuggage(context.Background())
+	if len(reaped) != 1 || reaped[0] != "conv-b" {
+		t.Fatalf("reaped %v, want [conv-b] (stale first)", reaped)
+	}
+}
+
+// Inventory reports in-memory beds and luggage with generations — the
+// scheduler's placement hint.
+func TestInventory(t *testing.T) {
+	root := t.TempDir()
+	fs := newFakeStore()
+	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, fs)
+
+	_, _ = m.Resolve("conv-live")
+	b, _ := m.Resolve("conv-cold")
+	_ = os.WriteFile(filepath.Join(b.Workspace, "data.txt"), []byte("x"), 0o644)
+	if ok, err := m.Evict("conv-cold"); err != nil || !ok {
+		t.Fatalf("evict: ok=%v err=%v", ok, err)
+	}
+
+	byID := map[string]InventoryBed{}
+	for _, e := range m.Inventory() {
+		byID[e.ID] = e
+	}
+	if e := byID["conv-live"]; e.State != "active" || e.Generation != 0 {
+		t.Fatalf("conv-live = %+v, want active gen 0", e)
+	}
+	cold := byID["conv-cold"]
+	if cold.State != "luggage" || cold.Generation != 1 || cold.Bytes == 0 || cold.LastUsedAt.IsZero() {
+		t.Fatalf("conv-cold = %+v, want luggage gen 1 with bytes and last_used_at", cold)
+	}
+}
+
 func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 	root := t.TempDir()
 	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)

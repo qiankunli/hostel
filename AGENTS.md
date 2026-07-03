@@ -12,12 +12,13 @@
 
 ```
 build/Dockerfile       多阶段多架构镜像(amd64/arm64,builder 原生交叉编译免 QEMU)：静态 hostel + debian-slim（内置可选 bwrap + chromium）；tini PID1；hostel --health 做 HEALTHCHECK
-cmd/hostel/main.go     组装：config→isolation→amenity registry→store→bed manager→gin server；idle GC/持久兜底；--version/--health/__confine(landlock confiner 自 re-exec) 前置子命令；优雅关停
+cmd/hostel/main.go     组装：config→isolation→amenity registry→store→bed manager→gin server；idle GC/luggage GC/持久兜底；--version/--health/__confine(landlock confiner 自 re-exec) 前置子命令；优雅关停
 internal/
 ├── config/            flags + HOSTEL_* env
 ├── isolation/         数据隔离房型档：New 按 env ceiling 路由；direct(dorm/全平台) + landlock(room/linux) + bwrap(suite/linux)
 ├── bed/               ★核心。bed=隔离单元=对外一个 sandbox
-│   ├── bed.go         Manager：Resolve(空→default)/Get/List/Delete/CollectIdle；ForegroundShell；StartCommand
+│   ├── bed.go         Manager：Resolve(空→default，按 generation 判 luggage 新鲜)/Get/List/Evict/Purge/CollectIdle；ForegroundShell；StartCommand
+│   ├── luggage.go     luggage（evict 留下的现场缓存）：磁盘水位 GC（stale 优先→LRU）、Inventory（调度器视图）
 │   ├── shell.go       常驻 bash：单 reader goroutine→lines chan，Run 用 marker 分帧、单消费（状态跨 run 保持）
 │   └── command.go     一次性命令 registry：前台/后台、status、logs（cursor 增量、环形缓冲）
 ├── fsops/             bed-workspace-rooted 文件操作；Resolve 做路径 confine + /workspace 虚拟前缀 rebase
@@ -30,7 +31,7 @@ internal/
 
 ## 关键约定
 
-- **bed = 客人单元 = 对外一个 sandbox**（workspace + 常驻 shell，状态跨命令保持）；**房型(dorm/room/suite)是这张床的隔离档、与 bed 正交**——bed 是跨档不变的基本单位，房型只描述"床周围的墙"有多严，不替代 bed 命名（见 `docs/data-isolation.md`）。**默认 bed 兜底**：不带 bed 的请求落 `default`，单租户调用方可无视 bed 概念；default bed 永不被清数据、不可 purge、不占 `--max-beds` 名额。**生命周期**：ACTIVE→EVICTING→DORMANT（快照即身份，`store.Exists` 判定，无第二注册表）；EVICTING 期间新活动取消驱逐（防 persist 窗口写丢）；`DELETE`=evict、`?purge=true`=终结身份；bed 目录分层 `{root}/{bedID}/{meta.json,data/}`，快照打包 bed 目录（含可移植 meta，顶层 `*.local` 除外），沙箱只见 `data/`。详见 `docs/persistence.md` §四。**bed 数量上限**：`--max-beds`（0=不限）只拦新建，满时 429 `BED_LIMIT_EXCEEDED` 作为调度背压；容量经 healthz/capabilities 上报。
+- **bed = 客人单元 = 对外一个 sandbox**（workspace + 常驻 shell，状态跨命令保持）；**房型(dorm/room/suite)是这张床的隔离档、与 bed 正交**——bed 是跨档不变的基本单位，房型只描述"床周围的墙"有多严，不替代 bed 命名（见 `docs/data-isolation.md`）。**默认 bed 兜底**：不带 bed 的请求落 `default`，单租户调用方可无视 bed 概念；default bed 永不被清数据、不可 purge、不占 `--max-beds` 名额。**生命周期**：ACTIVE→EVICTING→DORMANT（快照即身份，`store.Stat` 判定，无第二注册表）；EVICTING 期间新活动取消驱逐（防 persist 窗口写丢）；`DELETE`=evict、`?purge=true`=终结身份；bed 目录分层 `{root}/{bedID}/{meta.json,data/}`，快照打包 bed 目录（含可移植 meta，顶层 `*.local` 除外），沙箱只见 `data/`。**luggage**：快照是唯一事实、其余皆缓存——evict 留现场，同机 resume 按 generation（meta 里单调 persist 计数；判序不用时间戳，跨机时钟会反转）判新鲜：够新免下载 warm start，落后则整目录丢弃重拉、只换不合；磁盘走 `--luggage-high/low-bytes` 独立水位 GC（stale 优先→LRU）；`GET /v1/inventory` 给调度器一次拉全容量+本机全部 bed（stale-tolerant hint，正确性靠激活时复查兜底）。详见 `docs/persistence.md` §四。**bed 数量上限**：`--max-beds`（0=不限）只拦新建，满时 429 `BED_LIMIT_EXCEEDED` 作为调度背压；容量经 healthz/capabilities 上报。
 - **路径语义按模式**：`/workspace/x` 永远是 **file API** 的虚拟前缀（`fsops.Resolve` rebase + 拒绝逃逸）。**bwrap 下** workspace 同时真实挂载在 bed 内 `/workspace`（shell 路径 == file API 路径，cwd 由 `web` 层 `resolveCwd` 按 `Isolator.MountPoint()` 映射）；**direct 下**无挂载能力，shell cwd 是宿主真实目录。调用方以 capabilities 的 `workspace_mount` 探测。
 - **API 对齐 execd**：响应 JSON 结构、错误码、SSE 帧（`<json>\n\n`，事件 shape = execd `ServerStreamEvent`）都对齐 OpenSandbox，SDK 不改。加/改端点先对 `OpenSandbox/specs/execd-api.yaml`。
 - **isolation 按「青年旅社房型」分档**（对外保证，非机制名）：`dorm`（通铺，无屏障=direct）/ `room`（单间锁门、厕所公用，数据 EACCES 但兄弟可见、系统路径共享=landlock，自 re-exec `hostel __confine`）/ `suite`（套房全私有，兄弟不可见+私有 mount 视图+`/workspace` 规范挂载+env 剥除=bwrap）/ `auto`（顶格取 env 上限）。`effective=min(requested,ceiling)`，请求超上限诚实降级。机制（direct/bwrap/landlock/uid）是内部细节，全走 `Isolator` 接口。**三档均已实装**（room=landlock 自 re-exec `hostel __confine`，见 `docs/data-isolation.md`）。威胁模型：bed 越狱/串门去动别的 bed。
