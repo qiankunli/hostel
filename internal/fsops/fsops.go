@@ -115,24 +115,29 @@ func (o *Ops) chownNew(full string) {
 	_ = os.Lchown(full, o.uid, o.gid)
 }
 
-// mkdirAllOwned is MkdirAll + chownNew on every directory it actually created
-// (pre-existing ancestors keep their owner).
+// mkdirAllOwned is MkdirAll + owner handover on the directories that need it.
+// It fixes owners AFTER creating (walk deepest→root, chown while the owner is
+// wrong, stop at the first correctly-owned ancestor) rather than pre-probing
+// which levels are missing: a pre-probe races with concurrent deletes (an
+// ancestor deleted between probe and MkdirAll would be recreated daemon-owned
+// and skipped), and the post-walk also heals daemon-owned dirs left by older
+// hostel versions. Directories can't be hardlinked, so rehoming is safe.
 func (o *Ops) mkdirAllOwned(dir string) error {
-	if o.uid < 0 {
-		return os.MkdirAll(dir, 0o755)
-	}
-	var created []string
-	for d := dir; strings.HasPrefix(d, o.root); d = filepath.Dir(d) {
-		if _, err := os.Lstat(d); err == nil {
-			break
-		}
-		created = append(created, d)
-	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for _, d := range created {
-		o.chownNew(d)
+	if o.uid < 0 {
+		return nil
+	}
+	for d := dir; strings.HasPrefix(d, o.root); d = filepath.Dir(d) {
+		fi, err := os.Lstat(d)
+		if err != nil {
+			break
+		}
+		if uid, _, ok := ownerOf(fi); !ok || uid == o.uid {
+			break
+		}
+		_ = os.Lchown(d, o.uid, o.gid)
 	}
 	return nil
 }
