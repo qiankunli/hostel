@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -250,7 +251,17 @@ func runAsUser(args []string) int {
 	}
 	// The bed uid has no /etc/passwd entry; give tools a sane HOME (its own
 	// workspace) and USER so bash and friends don't choke on the unknown uid.
-	env := append(os.Environ(), "HOME="+dataDir, "USER=hostel-bed", "LOGNAME=hostel-bed")
+	// Filter any inherited HOME/USER/LOGNAME first: appending would leave two
+	// copies, and a libc getenv() takes the FIRST (the daemon's) — bash happens
+	// to be last-wins, but don't rely on the exec target being a shell.
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "USER=") || strings.HasPrefix(kv, "LOGNAME=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "HOME="+dataDir, "USER=hostel-bed", "LOGNAME=hostel-bed")
 	if err := syscall.Exec(path, cmd, env); err != nil {
 		fmt.Fprintf(os.Stderr, "hostel __asuser: exec %s: %v\n", path, err)
 		return 126

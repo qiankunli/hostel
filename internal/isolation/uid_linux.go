@@ -39,12 +39,16 @@ import (
 // self-re-exec: `hostel __asuser <uid> <bedDataDir> -- <cmd>...`.
 const AsUserArg = "__asuser"
 
-// Bed uids live in a fixed high band, chosen to avoid colliding with system or
-// human accounts. The uid is derived from the data dir path (no registry), so
-// Prepare (chown) and Wrap (setuid) agree with no shared state and it stays
-// stable across restarts. Two beds hashing to the same uid is possible but
-// rare; a colliding pair degrades to mutual access (dorm between just those
-// two) — never a crash. See docs/data-isolation.md.
+// Bed uids live in a fixed high band, ASSUMED unused by the host — not
+// guaranteed: this range can overlap /etc/subuid userns mappings (the 2nd
+// default user gets 231072..) or LDAP/service accounts. Under our threat model
+// (a bed straying into another bed, not adversarial uid-squatting) that's
+// acceptable; a bed colliding with a real host identity is a deployment
+// concern, documented in docs/data-isolation.md. The uid is derived from the
+// data dir path (no registry), so Prepare (chown) and Wrap (setuid) agree with
+// no shared state and it stays stable across restarts. Two beds hashing to the
+// same uid is possible but rare; a colliding pair degrades to mutual access
+// (dorm between just those two) — never a crash.
 const (
 	uidBase  = 200000
 	uidRange = 100000 // uids 200000..299999
@@ -203,11 +207,31 @@ func prepareUIDDir(dir string, uid int) error {
 }
 
 // chownTree recursively chowns root to uid:uid (uid == gid). Lchown so symlinks
-// are retargeted, not their referents.
+// are retargeted, not their referents; WalkDir doesn't descend symlinked dirs,
+// so a symlink can't lead the walk out of the tree.
+//
+// Hardlinks are the subtle case: a hardlink is a second name for the SAME
+// inode, so chowning it by path also rehomes whatever else points at that inode
+// — a bed could `ln /etc/x data/x` and, on the next Prepare, be handed
+// ownership of a host file (privilege escalation when fs.protected_hardlinks is
+// off — precisely the old/custom-kernel hosts uid isolation targets). So we
+// skip any multiply-linked regular file: it keeps its original owner (root), so
+// the bed still can't write it. Deployments should also keep
+// fs.protected_hardlinks=1 (docs/data-isolation.md). Directories legitimately
+// have nlink>1 (subdirs, "."), so the guard is regular-files-only.
 func chownTree(root string, uid int) error {
-	return filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.Type().IsRegular() {
+			info, ierr := d.Info()
+			if ierr != nil {
+				return ierr
+			}
+			if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+				return nil // multiply-linked: may point outside the tree, don't rehome it
+			}
 		}
 		return os.Lchown(p, uid, uid)
 	})
