@@ -21,10 +21,11 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/qiankunli/go-stdx/shellx"
 
 	"github.com/qiankunli/hostel/internal/isolation"
 )
@@ -62,11 +63,6 @@ type Shell struct {
 	dead  bool
 }
 
-// shellQuote single-quotes s for safe interpolation into a shell line.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // startShell launches the shell confined by iso to ws. hostCwd, when set,
 // becomes the starting directory via an initial `cd`.
 func startShell(shellPath string, iso isolation.Isolator, ws isolation.Workspace, hostCwd string) (*Shell, error) {
@@ -94,7 +90,7 @@ func startShell(shellPath string, iso isolation.Isolator, ws isolation.Workspace
 	s := &Shell{cmd: cmd, stdin: stdin, lines: make(chan string, 64)}
 	if hostCwd != "" {
 		// Best-effort initial cwd; a failure surfaces in the first run's output.
-		_, _ = io.WriteString(stdin, "cd -- "+shellQuote(hostCwd)+" || true\n")
+		_, _ = io.WriteString(stdin, "cd -- "+shellx.Quote(hostCwd)+" || true\n")
 	}
 	// Single long-lived reader → lines channel.
 	go func() {

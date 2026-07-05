@@ -17,9 +17,9 @@ package config
 
 import (
 	"flag"
-	"os"
-	"strconv"
 	"time"
+
+	"github.com/qiankunli/go-stdx/osx"
 )
 
 // Config is the hostel runtime configuration. hostel is a generic sandbox
@@ -82,27 +82,27 @@ type Config struct {
 func Load(args []string) *Config {
 	fs := flag.NewFlagSet("hostel", flag.ContinueOnError)
 	c := &Config{}
-	fs.StringVar(&c.Addr, "addr", envStr("HOSTEL_ADDR", DefaultAddr), "HTTP listen address")
+	fs.StringVar(&c.Addr, "addr", osx.EnvStr("HOSTEL_ADDR", DefaultAddr), "HTTP listen address")
 	// Preflight flags handled by main (used by the image HEALTHCHECK); real
 	// flags so addr resolution stays identical to the running server.
 	fs.BoolVar(&c.ShowVersion, "version", false, "print version and exit")
 	fs.BoolVar(&c.HealthCheck, "health", false, "GET local /healthz and exit (0=ok)")
-	fs.StringVar(&c.WorkspaceRoot, "workspace-root", envStr("HOSTEL_WORKSPACE_ROOT", "/workspace"), "parent dir for per-bed workspaces")
-	fs.StringVar(&c.IsolationMode, "isolation", envStr("HOSTEL_ISOLATION", "auto"), "data-isolation level: dorm | room | suite | auto (auto=env ceiling)")
-	fs.StringVar(&c.DefaultBed, "default-bed", envStr("HOSTEL_DEFAULT_BED", "default"), "bed id used when a request omits one")
-	fs.StringVar(&c.ShellPath, "shell", envStr("HOSTEL_SHELL", "/bin/bash"), "shell for bed sessions")
-	idle := fs.Duration("bed-idle-timeout", envDur("HOSTEL_BED_IDLE_TIMEOUT", 30*time.Minute), "reap a bed after this idle duration (0=never)")
-	fs.IntVar(&c.MaxBeds, "max-beds", envInt("HOSTEL_MAX_BEDS", 0), "max concurrent beds, 0=unlimited (default bed exempt)")
-	fs.StringVar(&c.StoreBackend, "store", envStr("HOSTEL_STORE", "auto"), "workspace persistence backend: auto (s3 when --s3-bucket is set, else noop) | noop | s3")
-	fs.StringVar(&c.S3Bucket, "s3-bucket", envStr("HOSTEL_S3_BUCKET", ""), "S3 bucket for bed snapshots")
-	fs.StringVar(&c.S3Prefix, "s3-prefix", envStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")
-	fs.StringVar(&c.S3Endpoint, "s3-endpoint", envStr("HOSTEL_S3_ENDPOINT", ""), "S3-compatible endpoint (empty = AWS)")
-	persist := fs.Duration("persist-interval", envDur("HOSTEL_PERSIST_INTERVAL", 0), "periodic snapshot interval, 0=lifecycle boundaries only")
-	fs.Int64Var(&c.LuggageHighBytes, "luggage-high-bytes", envInt64("HOSTEL_LUGGAGE_HIGH_BYTES", 0), "luggage disk high watermark in bytes, 0=no luggage GC")
-	fs.Int64Var(&c.LuggageLowBytes, "luggage-low-bytes", envInt64("HOSTEL_LUGGAGE_LOW_BYTES", 0), "luggage GC target in bytes (default 80% of high)")
-	fs.StringVar(&c.ChromiumPath, "chromium-path", envStr("HOSTEL_CHROMIUM_PATH", ""), "chromium binary for the browser amenity (empty = probe PATH)")
-	fs.StringVar(&c.ChromiumCDPURL, "chromium-cdp-url", envStr("HOSTEL_CHROMIUM_CDP_URL", ""), "attach to an existing Chromium CDP endpoint instead of launching")
-	idleStop := fs.Duration("chromium-idle-stop", envDur("HOSTEL_CHROMIUM_IDLE_STOP", 5*time.Minute), "stop a launched Chromium this long after its last tenant, 0=never")
+	fs.StringVar(&c.WorkspaceRoot, "workspace-root", osx.EnvStr("HOSTEL_WORKSPACE_ROOT", "/workspace"), "parent dir for per-bed workspaces")
+	fs.StringVar(&c.IsolationMode, "isolation", osx.EnvStr("HOSTEL_ISOLATION", "auto"), "data-isolation level: dorm | room | suite | auto (auto=env ceiling)")
+	fs.StringVar(&c.DefaultBed, "default-bed", osx.EnvStr("HOSTEL_DEFAULT_BED", "default"), "bed id used when a request omits one")
+	fs.StringVar(&c.ShellPath, "shell", osx.EnvStr("HOSTEL_SHELL", "/bin/bash"), "shell for bed sessions")
+	idle := fs.Duration("bed-idle-timeout", osx.EnvDuration("HOSTEL_BED_IDLE_TIMEOUT", 30*time.Minute), "reap a bed after this idle duration (0=never)")
+	fs.IntVar(&c.MaxBeds, "max-beds", osx.EnvInt("HOSTEL_MAX_BEDS", 0), "max concurrent beds, 0=unlimited (default bed exempt)")
+	fs.StringVar(&c.StoreBackend, "store", osx.EnvStr("HOSTEL_STORE", "auto"), "workspace persistence backend: auto (s3 when --s3-bucket is set, else noop) | noop | s3")
+	fs.StringVar(&c.S3Bucket, "s3-bucket", osx.EnvStr("HOSTEL_S3_BUCKET", ""), "S3 bucket for bed snapshots")
+	fs.StringVar(&c.S3Prefix, "s3-prefix", osx.EnvStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")
+	fs.StringVar(&c.S3Endpoint, "s3-endpoint", osx.EnvStr("HOSTEL_S3_ENDPOINT", ""), "S3-compatible endpoint (empty = AWS)")
+	persist := fs.Duration("persist-interval", osx.EnvDuration("HOSTEL_PERSIST_INTERVAL", 0), "periodic snapshot interval, 0=lifecycle boundaries only")
+	fs.Int64Var(&c.LuggageHighBytes, "luggage-high-bytes", osx.EnvInt64("HOSTEL_LUGGAGE_HIGH_BYTES", 0), "luggage disk high watermark in bytes, 0=no luggage GC")
+	fs.Int64Var(&c.LuggageLowBytes, "luggage-low-bytes", osx.EnvInt64("HOSTEL_LUGGAGE_LOW_BYTES", 0), "luggage GC target in bytes (default 80% of high)")
+	fs.StringVar(&c.ChromiumPath, "chromium-path", osx.EnvStr("HOSTEL_CHROMIUM_PATH", ""), "chromium binary for the browser amenity (empty = probe PATH)")
+	fs.StringVar(&c.ChromiumCDPURL, "chromium-cdp-url", osx.EnvStr("HOSTEL_CHROMIUM_CDP_URL", ""), "attach to an existing Chromium CDP endpoint instead of launching")
+	idleStop := fs.Duration("chromium-idle-stop", osx.EnvDuration("HOSTEL_CHROMIUM_IDLE_STOP", 5*time.Minute), "stop a launched Chromium this long after its last tenant, 0=never")
 	// Ignore parse errors for unknown flags in tests; flag prints usage itself.
 	_ = fs.Parse(args)
 	c.BedIdleTimeout = *idle
@@ -114,41 +114,4 @@ func Load(args []string) *Config {
 		c.LuggageLowBytes = c.LuggageHighBytes * 8 / 10
 	}
 	return c
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func envInt64(key string, def int64) int64 {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func envStr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envDur(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-		if n, err := strconv.Atoi(v); err == nil {
-			return time.Duration(n) * time.Second
-		}
-	}
-	return def
 }

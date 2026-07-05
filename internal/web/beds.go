@@ -15,22 +15,15 @@
 package web
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/qiankunli/go-stdx/randx"
 
 	"github.com/qiankunli/hostel/internal/bed"
 )
-
-func randomHex() string {
-	var b [6]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
 
 // bedView is the JSON shape for a bed in the management API.
 type bedView struct {
@@ -61,7 +54,7 @@ func (s *Server) bedCreate(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 	id := req.ID
 	if id == "" {
-		id = "bed-" + randomHex()
+		id = "bed-" + randx.Hex(6)
 	}
 	b, err := s.mgr.Resolve(id)
 	if err != nil {

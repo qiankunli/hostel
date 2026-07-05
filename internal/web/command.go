@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/qiankunli/go-stdx/shellx"
 
 	"github.com/qiankunli/hostel/internal/bed"
 	"github.com/qiankunli/hostel/internal/fsops"
@@ -135,28 +136,16 @@ func (s *Server) runCommand(c *gin.Context) {
 func wrapWithCwd(command, hostCwd string, envs map[string]string) string {
 	prefix := ""
 	for k, v := range envs {
-		prefix += "export " + k + "=" + shellSingleQuote(v) + "; "
+		prefix += "export " + k + "=" + shellx.Quote(v) + "; "
 	}
 	if hostCwd != "" {
-		prefix += "cd -- " + shellSingleQuote(hostCwd) + " && "
+		prefix += "cd -- " + shellx.Quote(hostCwd) + " && "
 	}
 	if prefix == "" {
 		return command
 	}
 	// Group so the prefix applies only to this command line.
 	return prefix + "{ " + command + " ; }"
-}
-
-func shellSingleQuote(s string) string {
-	out := "'"
-	for _, r := range s {
-		if r == '\'' {
-			out += `'\''`
-		} else {
-			out += string(r)
-		}
-	}
-	return out + "'"
 }
 
 // DELETE /command?id=... — interrupt a (background) command.

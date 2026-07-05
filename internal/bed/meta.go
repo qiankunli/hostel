@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/qiankunli/go-stdx/osx"
 )
 
 // metaFile sits next to (not inside) the bed's data dir, so bed code can never
@@ -86,25 +88,12 @@ func loadMeta(bedDir string) (bedMeta, bool) {
 	return m, true
 }
 
-// saveMeta writes atomically (temp + rename): meta.json is the bed's sole
-// identity record — a crash mid-write must not truncate it.
+// saveMeta writes atomically: meta.json is the bed's sole identity record —
+// a crash mid-write must not truncate it.
 func saveMeta(bedDir string, m bedMeta) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(bedDir, ".meta-*.tmp")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), metaPath(bedDir))
+	return osx.WriteFileAtomic(metaPath(bedDir), data, 0o600)
 }

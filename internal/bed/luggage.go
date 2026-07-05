@@ -16,12 +16,13 @@ package bed
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/qiankunli/go-stdx/filepathx"
 )
 
 // Luggage is a DORMANT bed's local dir left behind by Evict: a warm cache of
@@ -74,7 +75,7 @@ func (m *Manager) ListLuggage() []LuggageEntry {
 			continue
 		}
 		dir := filepath.Join(m.root, id)
-		l := LuggageEntry{BedID: id, Bytes: dirBytes(dir)}
+		l := LuggageEntry{BedID: id, Bytes: filepathx.DirBytes(dir)}
 		if meta, ok := loadMeta(dir); ok {
 			l.Generation = meta.Generation
 			l.LastUsedAt = meta.LastUsedAt
@@ -180,21 +181,6 @@ func (m *Manager) sweepGCLeftovers() {
 			_ = os.RemoveAll(filepath.Join(m.root, e.Name()))
 		}
 	}
-}
-
-// dirBytes sums regular-file sizes under dir (best-effort; errors skip).
-func dirBytes(dir string) int64 {
-	var n int64
-	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if info, err := d.Info(); err == nil {
-			n += info.Size()
-		}
-		return nil
-	})
-	return n
 }
 
 // InventoryBed is one row of the scheduler-facing inventory: every bed this
