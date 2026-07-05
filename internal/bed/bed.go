@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qiankunli/go-stdx/randx"
+
 	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/isolation"
 	"github.com/qiankunli/hostel/internal/store"
@@ -497,7 +499,7 @@ func (m *Manager) CreateShell(b *Bed, hostCwd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	id := "session-" + randomID()
+	id := "session-" + randx.Hex(8)
 	b.mu.Lock()
 	b.shells[id] = sh
 	b.mu.Unlock()

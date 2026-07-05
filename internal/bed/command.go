@@ -16,23 +16,15 @@ package bed
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-)
 
-func randomID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("t%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b[:])
-}
+	"github.com/qiankunli/go-stdx/randx"
+)
 
 // Command is one one-shot execution (spec /command), foreground or background.
 // Output lines are buffered for the status/logs endpoints; a foreground caller
@@ -99,7 +91,7 @@ func (r *CommandRegistry) start(bedID string, cmd *exec.Cmd, timeout time.Durati
 	cmd.Stderr = cmd.Stdout
 
 	c := &Command{
-		ID:        "cmd-" + randomID(),
+		ID:        "cmd-" + randx.Hex(8),
 		BedID:     bedID,
 		running:   true,
 		startedAt: time.Now(),
