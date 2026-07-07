@@ -15,9 +15,13 @@
 package web
 
 import (
+	"log"
+	"net"
 	"net/http"
+	"net/url"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gobwas/ws"
 
 	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/bed"
@@ -40,6 +44,64 @@ func (s *Server) browserOf(c *gin.Context) (*bed.Bed, amenity.Browser) {
 		return nil, nil
 	}
 	return b, br
+}
+
+// GET /v1/beds/:bedId/browser/info — per-bed CDP endpoint (execd-compatible
+// envelope). The control plane fetches this and injects the cdp_url into the
+// bed as PLAYWRIGHT_MCP_CDP_ENDPOINT; the bed's playwright then connectOverCDP
+// to a proxied socket that shows only this bed's slice of the shared browser.
+// The url is bed-local (127.0.0.1): the bed shares the pod net ns with hostel.
+func (s *Server) browserInfo(c *gin.Context) {
+	b, br := s.browserOf(c)
+	if br == nil {
+		return
+	}
+	token, err := br.CDPToken(b.ID, b.Workspace)
+	if err != nil {
+		runtimeError(c, err.Error())
+		return
+	}
+	// Reuse the port the request came in on; host is always loopback for the bed.
+	_, port := splitHostPort(c.Request.Host)
+	cdpURL := (&url.URL{
+		Scheme:   "ws",
+		Host:     "127.0.0.1:" + port,
+		Path:     "/v1/cdp",
+		RawQuery: url.Values{"bed": {b.ID}, "t": {token}}.Encode(),
+	}).String()
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    gin.H{"cdp_url": cdpURL},
+	})
+}
+
+// GET /v1/cdp?bed=&t= — websocket upgrade → per-bed CDP proxy. Not bed-scoped
+// by path: playwright connectOverCDP passes the full url (incl. query) and
+// can't set headers, so the bed id + token ride the query. ServeCDP
+// authenticates the token against the bed's live tenant, so a guessed bed/token
+// is refused there.
+func (s *Server) browserCDP(c *gin.Context) {
+	a := s.mgr.Amenities().Find("chromium")
+	br, ok := a.(amenity.Browser)
+	if a == nil || !ok {
+		respondError(c, http.StatusServiceUnavailable, ErrServiceUnavailable, "browser amenity unavailable")
+		return
+	}
+	bedID := c.Query("bed")
+	token := c.Query("t")
+	if bedID == "" || token == "" {
+		badRequest(c, "missing bed or token")
+		return
+	}
+	conn, _, _, err := ws.UpgradeHTTP(c.Request, c.Writer)
+	if err != nil {
+		// Response already partially written by the upgrader on failure.
+		log.Printf("hostel: cdp ws upgrade for bed=%s failed: %v", bedID, err)
+		return
+	}
+	if err := br.ServeCDP(conn, bedID, token); err != nil {
+		log.Printf("hostel: cdp proxy for bed=%s ended: %v", bedID, err)
+	}
 }
 
 // POST /v1/beds/:bedId/browser/goto {url}
@@ -206,4 +268,13 @@ func (s *Server) browserWait(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusOK)
+}
+
+// splitHostPort returns host and port from a "host:port" (port "" if absent).
+// net.SplitHostPort errors on a bare host; we tolerate that.
+func splitHostPort(hostport string) (host, port string) {
+	if h, p, err := net.SplitHostPort(hostport); err == nil {
+		return h, p
+	}
+	return hostport, ""
 }

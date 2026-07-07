@@ -78,6 +78,10 @@ type Config struct {
 	ChromiumPath     string
 	ChromiumCDPURL   string
 	ChromiumIdleStop time.Duration
+	// ChromiumDebugPort fixes a launched Chromium's --remote-debugging-port so
+	// the per-bed CDP proxy has a stable upstream (0 = no proxy in launch mode;
+	// attach mode uses the CDP URL). See docs/amenity.md〈per-bed CDP〉.
+	ChromiumDebugPort int
 	// ShellPath is the shell binary a bed's long-running session runs.
 	ShellPath string
 }
@@ -108,6 +112,7 @@ func Load(args []string) *Config {
 	fs.StringVar(&c.ChromiumPath, "chromium-path", osx.EnvStr("HOSTEL_CHROMIUM_PATH", ""), "chromium binary for the browser amenity (empty = probe PATH)")
 	fs.StringVar(&c.ChromiumCDPURL, "chromium-cdp-url", osx.EnvStr("HOSTEL_CHROMIUM_CDP_URL", ""), "attach to an existing Chromium CDP endpoint instead of launching")
 	idleStop := fs.Duration("chromium-idle-stop", osx.EnvDuration("HOSTEL_CHROMIUM_IDLE_STOP", 5*time.Minute), "stop a launched Chromium this long after its last tenant, 0=never")
+	fs.IntVar(&c.ChromiumDebugPort, "chromium-debug-port", osx.EnvInt("HOSTEL_CHROMIUM_DEBUG_PORT", 9222), "fixed remote-debugging-port for a launched Chromium so the per-bed CDP proxy has a stable upstream, 0=disable proxy")
 	// Ignore parse errors for unknown flags in tests; flag prints usage itself.
 	_ = fs.Parse(args)
 	c.BedIdleTimeout = *idle
