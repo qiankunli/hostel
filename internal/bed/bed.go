@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/qiankunli/go-stdx/randx"
+	"github.com/qiankunli/go-stdx/shellx"
 
 	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/isolation"
@@ -575,13 +576,23 @@ func (b *Bed) DeleteShell(id string) bool {
 // appended to the daemon environment; cwd (host path) overrides the workspace.
 func (m *Manager) buildCommand(b *Bed, command, hostCwd string, envs map[string]string) (*exec.Cmd, error) {
 	b.touch()
+	// Apply cwd with a `cd` INSIDE the command (same mechanism the session shell
+	// uses), NOT via cmd.Dir. Under suite hostCwd is a sandbox-internal path
+	// (/workspace/…) that doesn't exist on the carrier host, so setting it as
+	// the outer (bwrap) process's Dir makes ForkExec's chdir fail with ENOENT
+	// ("bedinit: spawn: fork: no such file or directory"). The cd runs in the
+	// command's own view — inside bwrap under suite, directly under direct —
+	// where hostCwd is valid (web.resolveCwd materialized the dir via EnsureDir).
+	if hostCwd != "" {
+		command = "cd -- " + shellx.Quote(hostCwd) + " && { " + command + " ; }"
+	}
 	cmd := exec.Command(m.shellPath, "-c", command)
 	if err := m.iso.Wrap(cmd, isolation.Workspace{Path: b.Workspace}); err != nil {
 		return nil, err
 	}
-	if hostCwd != "" {
-		cmd.Dir = hostCwd
-	}
+	// The OUTER process cwd must exist on the host; the bed's own workspace
+	// always does (the in-sandbox cwd is handled by the cd above / bwrap --chdir).
+	cmd.Dir = b.Workspace
 	if len(envs) > 0 {
 		env := os.Environ()
 		for k, v := range envs {
