@@ -32,17 +32,21 @@ OpenSandbox execd 是主要设计参考。
 
 ```
 tini (pid=1)                      ← pod 级收尸兜底
- └─ hostel (daemon)
+ └─ hostel (daemon)               ← 内置 amenity supervisor（Registry），非独立进程
      ├─ chromium (amenity)        ← pod 级共享，按 bed 切租，不进任何 bed 的树
+     ├─ jupyter  (amenity)
      ├─ bed-init [bed A]          ← 每 bed 一个：fork 命令、收尸、死前杀光子树
      │    ├─ exec command         ← 一次 exec 一个
      │    └─ session shell
      └─ bed-init [bed B] ...
 ```
 
-- **bed-init 必须是 spawner**（hostel 经 IPC 让它 fork，输出 fd 传回）：Linux 里爹由谁 fork 决定，光设 subreaper 收不到不在自己子树里的进程。用极小 Go 进程（re-exec `hostel bedinit`）走结构化 IPC——不用 shell 当 init，stdin 带内协议是已被故障验证的脆弱面。
+- **bed-init 必须是 spawner**（hostel 经 IPC 让它 fork，输出 fd 传回）：Linux 里爹由谁 fork 决定，光设 subreaper 收不到不在自己子树里的进程。不用 shell 当 init——stdin 带内协议是已被故障验证的脆弱面。
+- **bed-init 选型：自研，照 containerd shim 的形状**。业界现成品对不上号：tini/dumb-init 是纯 reaper（exec 单个孩子后不管事，无 IPC spawn 能力，位置是 pod PID 1）；supervisord/s6/runit 是"固定服务集"supervisor，非按请求 fork 的代理；containerd shim v2 / conmon 是同型原型但绑死 OCI 生态。落地形态：`hostel bedinit` 子命令 **re-exec 自己**（moby `reexec` 惯用法，零新二进制），unix socket + `SCM_RIGHTS` 传 fd，职责仅 fork / 收尸 / 死前杀树（兼设 subreaper 收双 fork 孤儿）。
+- **对照基线 execd：平树，它没解决这个问题**。execd 的命令全是 daemon 直接孩子（`Setpgid` + pgid 杀），无 init 层无 subreaper；其 `interrupt.go` 里 pgid 回收复用、zombie 轮询探测的大段处理正是平树的代价——"杀干净"只能做成概率近似。bed-init 是超越 execd 的点，不是移植。
 - **一次买四样**：teardown = 杀 bed-init 树（在途命令、`nohup` 孤儿 daemon 全灭，注册表扫描降为兜底）；`ps f` 直读进程归属；per-bed cgroup（`resource-isolation.md`）天然挂点；suite 档升级时 bed-init 原位变成 `bwrap --unshare-pid` 里的 PID 1（bed 从"进程树"升为"常驻 namespace"），spawner 协议与 exec 语义均不变。
-- 分两步：**S1** subreaper 版（全档可用，堵 teardown 洞）→ **S2** suite 档持久 ns + PID-1（依赖 pod 放开 userns；当前每次 exec 的 bwrap 是各自新开 namespace，视图相同但实例不同）。
+- **amenity 监督内置于 daemon，不设独立 amenity-manager 进程**：pod 语义下 hostel 是主容器进程，hostel 死 = pod 重启，独立 manager 买不到任何存活性，只多一层 IPC 和"谁重启 manager"。`amenity.Registry` 升级为 supervisor（健康检查 → backoff 重启）；崩溃重启后的租约走**惰性重建**——tenant 标失效，下次 `AcquireTenant` 重建切片（bed 侧感知为一次"新开"），避免主动全量重建的重启风暴。
+- 分两步：**S1** spawner 版 bed-init（无 namespace，全档可用，堵 teardown 洞）→ **S2** suite 档持久 ns + PID-1（依赖 pod 放开 userns；当前每次 exec 的 bwrap 是各自新开 namespace，视图相同但实例不同）。旁路备忘：cgroup v2 `cgroup.kill` 无需 init 进程即可整组必死，但只管杀、不管收尸、升不了 S2——是将来的叠加而非替代。
 
 ## 三、通用 managed-service 框架
 
