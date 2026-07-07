@@ -48,23 +48,33 @@ func osFacts() HostFacts {
 	return f
 }
 
-// apparmorProfile reads this process's AppArmor confinement label.
-// "unconfined" and absence (no LSM attr) both normalize to "" — only an
-// actual confining profile is a fact worth surfacing. Newer kernels expose
-// /proc/self/attr/apparmor/current; older ones only the legacy shared path.
+// apparmorProfile reads this process's AppArmor confinement label. "unconfined"
+// and absence both normalize to "" — only an actual confining profile is a fact
+// worth surfacing.
+//
+// The AppArmor-specific attr node (Linux 4.17+) is authoritative: if it exists,
+// AppArmor is the active LSM and its value is the answer. The legacy shared node
+// (/proc/self/attr/current) is LSM-ambiguous — SELinux writes its own label
+// there too — so we read it only when AppArmor is actually present, else an
+// SELinux-only host would mislabel a SELinux context as an AppArmor profile.
 func apparmorProfile() string {
-	for _, p := range []string{"/proc/self/attr/apparmor/current", "/proc/self/attr/current"} {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
+	if data, err := os.ReadFile("/proc/self/attr/apparmor/current"); err == nil {
+		return normalizeAppArmorLabel(string(data))
+	}
+	if _, err := os.Stat("/sys/kernel/security/apparmor"); err == nil {
+		if data, err := os.ReadFile("/proc/self/attr/current"); err == nil {
+			return normalizeAppArmorLabel(string(data))
 		}
-		label := strings.TrimSpace(string(data))
-		if label == "" || label == "unconfined" {
-			return ""
-		}
-		return label
 	}
 	return ""
+}
+
+func normalizeAppArmorLabel(raw string) string {
+	label := strings.TrimSpace(raw)
+	if label == "" || label == "unconfined" {
+		return ""
+	}
+	return label
 }
 
 // readEffectiveCaps parses CapEff from /proc/self/status (0 on any error).
