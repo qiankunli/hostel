@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,20 @@ import (
 	"github.com/qiankunli/hostel/internal/isolation"
 	"github.com/qiankunli/hostel/internal/store"
 )
+
+// ShortID derives a display-only short form of a bed id for log lines. Caller
+// ids look like "sandbox-<uuidv7>": the shared prefix carries no information
+// (uuidv7 leads with a timestamp) while the entropy sits at the tail, so keep
+// the tail. Display only — the full id stays the identity everywhere; the
+// "bed active" line logged at activation anchors the full↔short mapping, and
+// grepping a tail also hits lines that print the full id.
+func ShortID(id string) string {
+	const tail = 8
+	if len(id) <= tail+2 { // "default" and other short ids read best untouched
+		return id
+	}
+	return "…" + id[len(id)-tail:]
+}
 
 // Bed is one isolation unit.
 type Bed struct {
@@ -73,6 +88,9 @@ func (b *Bed) State() string {
 	}
 	return "active"
 }
+
+// Short is ShortID(b.ID) — the log-friendly form of this bed's id.
+func (b *Bed) Short() string { return ShortID(b.ID) }
 
 func (b *Bed) touch() {
 	b.mu.Lock()
@@ -272,6 +290,9 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	b := &Bed{ID: id, Dir: bedDir, Workspace: dataDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell),
 		paths: fsops.NewPaths(dataDir, m.iso.MountPoint())}
 	m.beds[id] = b
+	// The one place the full id is logged: everything downstream logs Short(),
+	// so this line is the grep anchor from a control-plane sandbox id.
+	log.Printf("hostel bed active: bed=%s short=%s restored=%v", id, b.Short(), restored)
 	return b, nil
 }
 
