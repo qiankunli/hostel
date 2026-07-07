@@ -44,12 +44,25 @@ func newBedInitManager(t *testing.T) *Manager {
 	return m
 }
 
+// resolveBedInit resolves a bed and guarantees its init (which inherits the
+// test binary's stderr) is torn down with the test — Pdeathsig covers crashes,
+// but orderly cleanup keeps `go test` from waiting on the inherited fd.
+func resolveBedInit(t *testing.T, m *Manager, id string) *Bed {
+	t.Helper()
+	b, err := m.Resolve(id)
+	if err != nil {
+		t.Fatalf("Resolve(%s): %v", id, err)
+	}
+	t.Cleanup(func() { _, _ = m.Evict(id) })
+	return b
+}
+
 // TestBedInitForegroundExec runs the full wired path: Manager → initSpawner →
 // bedinit → command. Exit codes, output streaming, env and set -e isolation
 // must behave exactly like the in-process spawner.
 func TestBedInitForegroundExec(t *testing.T) {
 	m := newBedInitManager(t)
-	b, _ := m.Resolve("conv-init")
+	b := resolveBedInit(t, m, "conv-init")
 	ctx := context.Background()
 
 	var out strings.Builder
@@ -75,7 +88,7 @@ func TestBedInitForegroundExec(t *testing.T) {
 // pgid sweep could reach.
 func TestBedInitTeardownKillsTree(t *testing.T) {
 	m := newBedInitManager(t)
-	b, _ := m.Resolve("conv-init-kill")
+	b := resolveBedInit(t, m, "conv-init-kill")
 
 	pidfile := t.TempDir() + "/escapee.pid"
 	done := make(chan int, 1)
@@ -122,7 +135,7 @@ func TestBedInitTeardownKillsTree(t *testing.T) {
 // bed's init and keeps its stateful semantics.
 func TestBedInitSessionShell(t *testing.T) {
 	m := newBedInitManager(t)
-	b, _ := m.Resolve("conv-init-shell")
+	b := resolveBedInit(t, m, "conv-init-shell")
 
 	sh, err := m.ForegroundShell(b)
 	if err != nil {

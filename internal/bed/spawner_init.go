@@ -72,6 +72,7 @@ func (s *initSpawner) ensure(bedID string) (*initHandle, error) {
 	cmd := exec.Command(s.exe, bedinit.InitArg, "--socket", socket, "--bed", bedID)
 	cmd.Stdout = os.Stderr // bedinit logs join the daemon's stream
 	cmd.Stderr = os.Stderr
+	setPdeathsig(cmd) // daemon death → SIGTERM → the init takes its tree along
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("bed: start bedinit for %s: %w", bedID, err)
 	}
