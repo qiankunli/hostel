@@ -174,3 +174,24 @@ func TestOwnerInheritance(t *testing.T) {
 		o.chownNew(linked)
 	})
 }
+
+func TestEnsureDirCreatesNested(t *testing.T) {
+	root := t.TempDir()
+	o := New(root)
+
+	// A caller-named workdir deep under the workspace that doesn't exist yet.
+	host, err := o.Resolve("/workspace/sub/deep/dir")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := o.EnsureDir(host); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	if fi, err := os.Stat(host); err != nil || !fi.IsDir() {
+		t.Fatalf("dir not created (err=%v)", err)
+	}
+	// Idempotent: a second call on an existing dir is fine.
+	if err := o.EnsureDir(host); err != nil {
+		t.Fatalf("EnsureDir (repeat): %v", err)
+	}
+}
