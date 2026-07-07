@@ -8,6 +8,21 @@
 - **不做**（留给上层调度系统）：实例调度、跨实例路由、计费配额。
 - 参考 OpenSandbox execd（Apache-2.0）净重写，非其 fork；归属见 `NOTICE`。设计与 roadmap 见 `docs/design.md`。
 
+## 概念与命名约定
+
+以下名词全仓（代码 / 注释 / 文档）统一使用，避免同物多名、一名多物：
+
+- **bed**：隔离执行单元，对外即一个 sandbox（workspace + 常驻 shell，状态跨命令保持）。
+- **bed id**：bed 的标识，**由调用方给定、对 hostel 不透明**——hostel 不解释其业务语义（不认识 conversation / tenant 等上层概念，也不据此派生任何子目录）；缺省兜底 id 为 `default`。
+- **workspace-root**：所有 bed 目录的**父目录**，**可配、不写死**（`--workspace-root` / `HOSTEL_WORKSPACE_ROOT`，默认 `/workspace`）；**daemon 启动时创建一次**。
+- **bed 目录**：`{workspace-root}/{bed id}`，含 `meta.json`（可移植身份）+ `data/`；**该 bed 首次被 Resolve（即首次收到指向它的请求）时惰性创建**。
+- **bed workspace / data 目录**：`{bed 目录}/data`——沙箱内可见为 `/workspace`（`fsops.VirtualPrefix`：file API 虚拟前缀 + suite 下的真实挂载点）；持久化 / 快照的对象，沙箱只见它。
+- **房型（dorm / room / suite）**：bed 的隔离档，与 bed 正交（见〈关键约定〉isolation）。
+- **luggage**：bed evict 后留在本机的现场缓存（快照才是身份，luggage 只是加速）。
+- **amenity**：bed 外由 hostel 统一管理的共享重资产设施（Chromium / Jupyter…）。
+
+> **易混点**：`workspace-root`（宿主侧、**所有** bed 的父目录）≠ bed 的 **workspace**（沙箱侧的 `/workspace`，即**某一个** bed 的 `data/` 目录）。两者都含 "workspace" 但一个是全局父目录、一个是单 bed 的数据根。
+
 ## 代码地图与核心模块
 
 ```
