@@ -146,6 +146,15 @@ func (o *Ops) mkdirAllOwned(dir string) error {
 	return nil
 }
 
+// EnsureDir creates host directory dir (and any missing parents) with the
+// workspace's owner, for callers that resolved a host path via Resolve and need
+// it to exist — e.g. an exec cwd the caller named but hasn't created yet. dir
+// must already be workspace-confined (Resolve guarantees this); ownership
+// handover keeps it usable under the uid isolation tier.
+func (o *Ops) EnsureDir(dir string) error {
+	return o.mkdirAllOwned(dir)
+}
+
 // Resolve maps a client path to a host path under the workspace, rejecting
 // escapes. Exported for exec cwd resolution.
 func (o *Ops) Resolve(p string) (string, error) {

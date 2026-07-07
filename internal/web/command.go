@@ -57,6 +57,15 @@ func (s *Server) resolveCwd(c *gin.Context, b *bed.Bed, ops *fsops.Ops, cwd stri
 		badRequest(c, err.Error())
 		return "", false
 	}
+	// A caller may name a workspace subdirectory that doesn't exist yet — the
+	// bed's workspace starts with just its root. Spawning into a missing cwd
+	// fails deep in the spawner with an opaque ENOENT ("fork: no such file or
+	// directory"), so materialize the dir here. Safe: ops.Resolve already
+	// confined `host` inside this bed's workspace.
+	if err := ops.EnsureDir(host); err != nil {
+		runtimeError(c, "prepare workdir: "+err.Error())
+		return "", false
+	}
 	mp := s.mgr.Isolator().MountPoint()
 	if mp == "" {
 		return host, true
