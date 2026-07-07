@@ -126,10 +126,17 @@ reports `amenities: {chromium: idle|running}`.
 ## Configuration
 
 Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
-`--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` / `--store` /
+`--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` /
+`--bed-init` / `--store` /
 `--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval` /
 `--luggage-high-bytes` / `--luggage-low-bytes` /
 `--chromium-path` / `--chromium-cdp-url` / `--chromium-idle-stop`.
+
+Process tree: `--bed-init auto` (default) runs each bed's processes under a
+per-bed init (`hostel __bedinit`) so bed teardown kills the bed's WHOLE tree —
+including `setsid`/double-fork daemons a plain pgid sweep can't reach. `auto`
+probes at boot and falls back to in-process forking where the init can't serve
+(non-linux dev); `off` forces in-process. See docs/design.md 〈进程树〉.
 
 Persistence: setting `--s3-bucket` (any S3-compatible endpoint) turns it on —
 the default `--store auto` resolves to `s3`, an incremental content-addressed
