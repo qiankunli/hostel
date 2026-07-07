@@ -16,12 +16,17 @@ package amenity
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,12 +36,16 @@ import (
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
+	"github.com/qiankunli/go-stdx/randx"
 )
 
 // Browser is the action surface the web layer adapts to HTTP. Deliberately
 // small in v1 (docs/amenity.md §2): open-look-shoot; interactions come later.
-// The CDP websocket is never exposed north — a browser-level socket sees every
-// bed's context.
+// The RAW browser-level CDP websocket is never exposed north — it sees every
+// bed's context. What IS exposed is a per-bed PROXIED endpoint (CDPToken +
+// ServeCDP): the proxy pins the bed's own BrowserContext and filters
+// target/context visibility, so a bed's playwright drives only its own slice
+// of the shared browser.
 type Browser interface {
 	Goto(ctx context.Context, bedID, workspace, url string) (title, finalURL string, err error)
 	// Screenshot captures the current page into the bed workspace and returns
@@ -55,6 +64,16 @@ type Browser interface {
 	Scroll(ctx context.Context, bedID, workspace string, dx, dy int) error
 	// Wait blocks until selector becomes visible (bounded by the action timeout).
 	Wait(ctx context.Context, bedID, workspace, selector string) error
+	// CDPToken ensures the bed's browser slice and returns the secret that
+	// authorizes its proxied CDP endpoint (see ServeCDP). The token is minted
+	// per tenant and dies with it — possession proves the caller got it from
+	// the bed-scoped /v1/browser/info, not by guessing a bed id.
+	CDPToken(bedID, workspace string) (string, error)
+	// ServeCDP bridges one already-upgraded websocket to the shared browser as
+	// bedID's tenant view: Target.* visibility is filtered to the bed's own
+	// browser contexts and Browser.close is refused. Blocks until either side
+	// closes. conn is always closed on return.
+	ServeCDP(conn net.Conn, bedID, token string) error
 	ReleaseTenant(bedID string) error
 }
 
@@ -71,6 +90,11 @@ type ChromiumConfig struct {
 	IdleStop time.Duration
 	// ActionTimeout bounds one browser action (navigate, shot...).
 	ActionTimeout time.Duration
+	// DebugPort fixes the launched browser's --remote-debugging-port so the
+	// per-bed CDP proxy has a stable upstream (chromedp alone would pick a
+	// random port hostel can't dial back). 0 disables the proxy in launch mode;
+	// attach mode always uses CDPURL as upstream.
+	DebugPort int
 }
 
 // chromium is the first amenity: one shared browser, one isolated
@@ -104,6 +128,10 @@ type chromiumTenant struct {
 	contextID cdp.BrowserContextID
 	tabCtx    context.Context
 	tabStop   context.CancelFunc
+	// cdpToken authorizes the bed's proxied CDP endpoint. Minted with the
+	// tenant, handed out only via CDPToken (the bed-scoped browser/info path),
+	// dies with the tenant.
+	cdpToken string
 }
 
 func (t *chromiumTenant) Close() error {
@@ -186,6 +214,11 @@ func (c *chromium) ensureRunning() error {
 			chromedp.ExecPath(c.cfg.ExecPath),
 			chromedp.NoSandbox, // hostel often runs as root in a container; bed code can't reach this process anyway
 		)
+		if c.cfg.DebugPort > 0 {
+			// Fixed port so the per-bed CDP proxy has a stable upstream to dial;
+			// chromedp's own stderr-parsed ws URL is not exposed by its API.
+			opts = append(opts, chromedp.Flag("remote-debugging-port", strconv.Itoa(c.cfg.DebugPort)))
+		}
 		c.allocCtx, c.allocStop = chromedp.NewExecAllocator(base, opts...)
 	}
 	c.master, c.masterCtl = chromedp.NewContext(c.allocCtx)
@@ -294,9 +327,93 @@ func (c *chromium) tenant(bedID, workspace string) (*chromiumTenant, error) {
 		tabStop()
 		return nil, fmt.Errorf("amenity: chromium attach tab for bed %s: %w", bedID, err)
 	}
-	t := &chromiumTenant{bedID: bedID, contextID: contextID, tabCtx: tabCtx, tabStop: tabStop}
+	t := &chromiumTenant{bedID: bedID, contextID: contextID, tabCtx: tabCtx, tabStop: tabStop,
+		cdpToken: randx.Hex(16)}
 	c.tenants[bedID] = t
 	return t, nil
+}
+
+// CDPToken implements Browser: ensure the bed's tenant and hand out the secret
+// that authorizes its proxied CDP endpoint.
+func (c *chromium) CDPToken(bedID, workspace string) (string, error) {
+	if !c.proxyable() {
+		return "", fmt.Errorf("amenity: chromium CDP proxy unavailable (launch mode needs --chromium-debug-port)")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, err := c.tenant(bedID, workspace)
+	if err != nil {
+		return "", err
+	}
+	return t.cdpToken, nil
+}
+
+// proxyable reports whether a stable upstream CDP endpoint exists: attach mode
+// always has one (CDPURL), launch mode only with a fixed debug port.
+func (c *chromium) proxyable() bool {
+	return c.attach || c.cfg.DebugPort > 0
+}
+
+// upstreamHTTPBase is the browser's own devtools HTTP endpoint ("/json/version"
+// lives there). Valid only when proxyable().
+func (c *chromium) upstreamHTTPBase() string {
+	if c.attach {
+		return strings.TrimSuffix(c.cfg.CDPURL, "/")
+	}
+	return "http://127.0.0.1:" + strconv.Itoa(c.cfg.DebugPort)
+}
+
+// upstreamWSURL resolves the browser-level websocket URL via /json/version.
+// Resolved per proxy session, not cached: it changes whenever the shared
+// browser restarts (crash supervision, idle-stop).
+func (c *chromium) upstreamWSURL(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.upstreamHTTPBase()+"/json/version", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("amenity: chromium /json/version: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return "", err
+	}
+	var v struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil || v.WebSocketDebuggerURL == "" {
+		return "", fmt.Errorf("amenity: chromium /json/version: no webSocketDebuggerUrl (err=%v)", err)
+	}
+	return v.WebSocketDebuggerURL, nil
+}
+
+// ServeCDP implements Browser: authenticate the token, then bridge the client
+// websocket to the shared browser filtered to this bed's contexts.
+func (c *chromium) ServeCDP(conn net.Conn, bedID, token string) error {
+	defer conn.Close()
+	c.mu.Lock()
+	t, ok := c.tenants[bedID]
+	authorized := ok && token != "" && subtle.ConstantTimeCompare([]byte(t.cdpToken), []byte(token)) == 1
+	var contextID cdp.BrowserContextID
+	if authorized {
+		contextID = t.contextID
+	}
+	c.mu.Unlock()
+	if !authorized {
+		// The token is minted with the tenant and only handed out via
+		// browser/info; a mismatch means a guessed bed id or a stale token
+		// (tenant re-created). Refuse — never fall back to unfiltered CDP.
+		return fmt.Errorf("amenity: chromium CDP: unauthorized for bed %s", bedID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	upstream, err := c.upstreamWSURL(ctx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	return proxyCDP(conn, upstream, bedID, string(contextID))
 }
 
 // AcquireTenant implements Amenity.

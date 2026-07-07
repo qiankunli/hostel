@@ -82,9 +82,10 @@ func main() {
 	// possible; otherwise the facility is honestly absent.
 	amenities := amenity.NewRegistry()
 	if br, ok := amenity.NewChromium(amenity.ChromiumConfig{
-		ExecPath: cfg.ChromiumPath,
-		CDPURL:   cfg.ChromiumCDPURL,
-		IdleStop: cfg.ChromiumIdleStop,
+		ExecPath:  cfg.ChromiumPath,
+		CDPURL:    cfg.ChromiumCDPURL,
+		IdleStop:  cfg.ChromiumIdleStop,
+		DebugPort: cfg.ChromiumDebugPort,
 	}); ok {
 		amenities.Register(br.(amenity.Amenity))
 		log.Printf("hostel: amenity chromium registered (attach=%v)", cfg.ChromiumCDPURL != "")

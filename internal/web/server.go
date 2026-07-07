@@ -100,6 +100,10 @@ func (s *Server) routes() {
 	// Scheduler-facing: capacity + all local beds (incl. luggage) in one poll.
 	e.GET("/v1/inventory", s.inventory)
 
+	// Per-bed CDP proxy websocket (bed + token in query; playwright can't set
+	// headers). Top-level, not under /v1/beds — the client passes the whole URL.
+	e.GET("/v1/cdp", s.browserCDP)
+
 	v1 := e.Group("/v1/beds")
 	{
 		v1.GET("", s.bedList)
@@ -119,6 +123,7 @@ func (s *Server) routes() {
 		v1.POST("/:bedId/browser/scroll", s.browserScroll)
 		v1.POST("/:bedId/browser/wait", s.browserWait)
 		v1.POST("/:bedId/browser/close", s.browserClose)
+		v1.GET("/:bedId/browser/info", s.browserInfo)
 	}
 }
 
