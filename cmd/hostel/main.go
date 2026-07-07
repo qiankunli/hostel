@@ -33,6 +33,7 @@ import (
 
 	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/bed"
+	"github.com/qiankunli/hostel/internal/bedinit"
 	"github.com/qiankunli/hostel/internal/config"
 	"github.com/qiankunli/hostel/internal/isolation"
 	"github.com/qiankunli/hostel/internal/store"
@@ -52,6 +53,8 @@ func main() {
 			os.Exit(runConfine(os.Args[2:]))
 		case isolation.AsUserArg: // uid: __asuser <uid> <dataDir> -- <cmd>...
 			os.Exit(runAsUser(os.Args[2:]))
+		case bedinit.InitArg: // per-bed init/spawner: __bedinit --socket S --bed B
+			os.Exit(bedinit.Run(os.Args[2:]))
 		}
 	}
 
@@ -104,6 +107,19 @@ func main() {
 		log.Fatalf("hostel: init bed manager: %v", err)
 	}
 	mgr.SetLuggageLimits(cfg.LuggageHighBytes, cfg.LuggageLowBytes)
+
+	// Per-bed init spawner (docs/design.md 〈进程树〉 S1): auto probes once at
+	// boot; a failed probe (non-linux, odd deployment) is an honest downgrade
+	// to in-process forking, logged, never a startup failure.
+	if cfg.BedInit != "off" {
+		if exe, err := os.Executable(); err != nil {
+			log.Printf("hostel: bed-init disabled (executable path: %v)", err)
+		} else if err := mgr.EnableBedInit(exe); err != nil {
+			log.Printf("hostel: bed-init unavailable, using in-process spawner: %v", err)
+		} else {
+			log.Printf("hostel: bed-init spawner enabled")
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

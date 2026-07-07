@@ -17,10 +17,9 @@ package bed
 import (
 	"bufio"
 	"fmt"
-	"os/exec"
+	"io"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/qiankunli/go-stdx/randx"
@@ -41,7 +40,7 @@ type Command struct {
 	startedAt  time.Time
 	finishedAt *time.Time
 
-	cmd  *exec.Cmd
+	proc Proc
 	done chan struct{} // closed when the process has been reaped
 }
 
@@ -76,31 +75,20 @@ func newCommandRegistry() *CommandRegistry {
 	return &CommandRegistry{cmds: make(map[string]*Command), cursors: make(map[string]*cursorState)}
 }
 
-// start launches cmd and streams combined stdout/stderr into the buffer (and
-// onLine when given). timeout > 0 kills the process group at the deadline.
-func (r *CommandRegistry) start(bedID string, cmd *exec.Cmd, timeout time.Duration, onLine func(string)) (*Command, error) {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true // kill the whole tree on interrupt/timeout
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	cmd.Stderr = cmd.Stdout
-
+// track registers an already-started process and drives it to completion:
+// streams combined stdout/stderr from output into the buffer (and onLine when
+// given), then records the exit code from proc.Wait. timeout > 0 kills the
+// process group at the deadline. Process START belongs to the Spawner seam —
+// the registry only bookkeeps, so it works identically whether the process is
+// a daemon child or lives under the bed's init.
+func (r *CommandRegistry) track(bedID string, proc Proc, output io.ReadCloser, timeout time.Duration, onLine func(string)) *Command {
 	c := &Command{
 		ID:        "cmd-" + randx.Hex(8),
 		BedID:     bedID,
 		running:   true,
 		startedAt: time.Now(),
-		cmd:       cmd,
+		proc:      proc,
 		done:      make(chan struct{}),
-	}
-	if err := cmd.Start(); err != nil {
-		stdout.Close()
-		return nil, err
 	}
 
 	r.mu.Lock()
@@ -114,7 +102,7 @@ func (r *CommandRegistry) start(bedID string, cmd *exec.Cmd, timeout time.Durati
 	}
 
 	go func() {
-		reader := bufio.NewReader(stdout)
+		reader := bufio.NewReader(output)
 		for {
 			line, err := reader.ReadString('\n')
 			if line != "" {
@@ -127,7 +115,8 @@ func (r *CommandRegistry) start(bedID string, cmd *exec.Cmd, timeout time.Durati
 				break
 			}
 		}
-		werr := cmd.Wait()
+		output.Close()
+		code, werr := proc.Wait()
 		if timer != nil {
 			timer.Stop()
 		}
@@ -135,20 +124,14 @@ func (r *CommandRegistry) start(bedID string, cmd *exec.Cmd, timeout time.Durati
 		c.mu.Lock()
 		c.running = false
 		c.finishedAt = &now
-		code := 0
 		if werr != nil {
-			if ee, ok := werr.(*exec.ExitError); ok {
-				code = ee.ExitCode()
-			} else {
-				code = -1
-				c.err = werr.Error()
-			}
+			c.err = werr.Error()
 		}
 		c.exitCode = &code
 		c.mu.Unlock()
 		close(c.done)
 	}()
-	return c, nil
+	return c
 }
 
 func (c *Command) appendLine(r *CommandRegistry, line string) {
@@ -172,11 +155,11 @@ func (c *Command) Wait() { <-c.done }
 // Interrupt kills the process group.
 func (c *Command) Interrupt() {
 	c.mu.Lock()
-	proc := c.cmd.Process
+	proc := c.proc
 	running := c.running
 	c.mu.Unlock()
 	if running && proc != nil {
-		_ = syscall.Kill(-proc.Pid, syscall.SIGKILL)
+		proc.Kill()
 	}
 }
 

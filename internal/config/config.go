@@ -50,6 +50,10 @@ type Config struct {
 	// NEW bed creation only, never to the default bed; the 429 it produces is
 	// the backpressure/placement signal for an upstream scheduler.
 	MaxBeds int
+	// BedInit selects the process spawner: "auto" (default) probes the per-bed
+	// init (docs/design.md 〈进程树〉) at boot and falls back to in-process
+	// forking where it can't serve; "off" forces in-process.
+	BedInit string
 
 	// Workspace persistence (docs/persistence.md). Backend "auto" (default)
 	// resolves to "s3" when a bucket is configured and "noop" otherwise.
@@ -93,6 +97,7 @@ func Load(args []string) *Config {
 	fs.StringVar(&c.ShellPath, "shell", osx.EnvStr("HOSTEL_SHELL", "/bin/bash"), "shell for bed sessions")
 	idle := fs.Duration("bed-idle-timeout", osx.EnvDuration("HOSTEL_BED_IDLE_TIMEOUT", 30*time.Minute), "reap a bed after this idle duration (0=never)")
 	fs.IntVar(&c.MaxBeds, "max-beds", osx.EnvInt("HOSTEL_MAX_BEDS", 0), "max concurrent beds, 0=unlimited (default bed exempt)")
+	fs.StringVar(&c.BedInit, "bed-init", osx.EnvStr("HOSTEL_BED_INIT", "auto"), "per-bed init spawner: auto (probe at boot, fall back in-process) | off")
 	fs.StringVar(&c.StoreBackend, "store", osx.EnvStr("HOSTEL_STORE", "auto"), "workspace persistence backend: auto (s3 when --s3-bucket is set, else noop) | noop | s3")
 	fs.StringVar(&c.S3Bucket, "s3-bucket", osx.EnvStr("HOSTEL_S3_BUCKET", ""), "S3 bucket for bed snapshots")
 	fs.StringVar(&c.S3Prefix, "s3-prefix", osx.EnvStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")

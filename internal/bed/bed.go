@@ -28,7 +28,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/qiankunli/go-stdx/randx"
@@ -105,6 +104,7 @@ type Manager struct {
 	shellPath  string
 	amenities  *amenity.Registry // nil-safe; ReleaseAll on bed teardown
 	commands   *CommandRegistry  // one-shot commands, daemon-global ids
+	spawner    Spawner           // forks bed processes; owns the teardown sweep
 	maxBeds    int               // cap on concurrent beds; 0 = unlimited
 	store      store.Store       // workspace persistence (Noop when disabled)
 	// luggage disk watermarks (bytes; high 0 = GC off). Set once at startup
@@ -137,6 +137,7 @@ func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, amen
 		shellPath:  shellPath,
 		amenities:  amenities,
 		commands:   newCommandRegistry(),
+		spawner:    newInProcSpawner(),
 		maxBeds:    maxBeds,
 		store:      st,
 		beds:       make(map[string]*Bed),
@@ -393,6 +394,9 @@ func (m *Manager) teardown(b *Bed) {
 	}
 	b.mu.Unlock()
 	m.commands.killBed(b.ID)
+	// The spawner sweep is the authoritative kill: it also catches processes
+	// the registry never saw (foreground RunForeground runs are unregistered).
+	m.spawner.KillBed(b.ID)
 	m.amenities.ReleaseAll(b.ID)
 }
 
@@ -497,7 +501,7 @@ func (m *Manager) CollectIdle(timeout time.Duration) []string {
 // by the caller via fsops).
 func (m *Manager) CreateShell(b *Bed, hostCwd string) (string, error) {
 	b.touch()
-	sh, err := startShell(m.shellPath, m.iso, isolation.Workspace{Path: b.Workspace}, hostCwd)
+	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.iso, isolation.Workspace{Path: b.Workspace}, hostCwd)
 	if err != nil {
 		return "", err
 	}
@@ -526,7 +530,7 @@ func (m *Manager) ForegroundShell(b *Bed) (*Shell, error) {
 	}
 	b.mu.Unlock()
 
-	sh, err := startShell(m.shellPath, m.iso, isolation.Workspace{Path: b.Workspace}, "")
+	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.iso, isolation.Workspace{Path: b.Workspace}, "")
 	if err != nil {
 		return nil, err
 	}
@@ -588,16 +592,39 @@ func (m *Manager) buildCommand(b *Bed, command, hostCwd string, envs map[string]
 	return cmd, nil
 }
 
-// StartCommand launches a one-shot command in the bed and registers it.
-func (m *Manager) StartCommand(b *Bed, command, hostCwd string, envs map[string]string, timeout time.Duration, onLine func(string)) (*Command, error) {
+// startOneShot builds and launches an isolated one-shot command via the
+// spawner, returning the proc and the read end of its combined stdout+stderr.
+// The pipe is explicit (not StdoutPipe) so the raw child-side fd can cross a
+// process boundary when the spawner is the bed's init.
+func (m *Manager) startOneShot(b *Bed, command, hostCwd string, envs map[string]string) (Proc, *os.File, error) {
 	cmd, err := m.buildCommand(b, command, hostCwd, envs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	c, err := m.commands.start(b.ID, cmd, timeout, onLine)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Stdout = pw
+	cmd.Stderr = pw // interleave, like the /command spec
+	proc, err := m.spawner.Start(b.ID, cmd)
+	// Child holds its own copy now (or never will, on error): drop ours, or
+	// the reader never sees EOF.
+	pw.Close()
+	if err != nil {
+		pr.Close()
+		return nil, nil, err
+	}
+	return proc, pr, nil
+}
+
+// StartCommand launches a one-shot command in the bed and registers it.
+func (m *Manager) StartCommand(b *Bed, command, hostCwd string, envs map[string]string, timeout time.Duration, onLine func(string)) (*Command, error) {
+	proc, out, err := m.startOneShot(b, command, hostCwd, envs)
 	if err != nil {
 		return nil, err
 	}
+	c := m.commands.track(b.ID, proc, out, timeout, onLine)
 	go func() { // profile the run once it is reaped (background = async)
 		c.Wait()
 		st := c.Status()
@@ -621,26 +648,13 @@ func (m *Manager) StartCommand(b *Bed, command, hostCwd string, envs map[string]
 // down ("shell: session exited during run"); the persistent shell now serves
 // only the explicit /session endpoint.
 func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, hostCwd string, envs map[string]string, timeout time.Duration, onLine func(string)) (int, error) {
-	cmd, err := m.buildCommand(b, command, hostCwd, envs)
+	proc, out, err := m.startOneShot(b, command, hostCwd, envs)
 	if err != nil {
 		return -1, err
 	}
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true // kill the whole tree on timeout/cancel
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return -1, err
-	}
-	cmd.Stderr = cmd.Stdout // interleave, like the /command spec
 	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		return -1, err
-	}
-	kill := func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	if timeout > 0 {
-		t := time.AfterFunc(timeout, kill)
+		t := time.AfterFunc(timeout, proc.Kill)
 		defer t.Stop()
 	}
 	// Client disconnect / shutdown cancels the run: kill the tree so a runaway
@@ -650,11 +664,11 @@ func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, hostCwd st
 	go func() {
 		select {
 		case <-ctx.Done():
-			kill()
+			proc.Kill()
 		case <-stop:
 		}
 	}()
-	reader := bufio.NewReader(stdout)
+	reader := bufio.NewReader(out)
 	for {
 		line, rerr := reader.ReadString('\n')
 		if line != "" && onLine != nil {
@@ -664,13 +678,11 @@ func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, hostCwd st
 			break
 		}
 	}
-	werr := cmd.Wait()
+	out.Close()
+	code, werr := proc.Wait()
 	b.RecordCommand(time.Since(start))
 	if werr != nil {
-		if ee, ok := werr.(*exec.ExitError); ok {
-			return ee.ExitCode(), nil
-		}
 		return -1, werr
 	}
-	return 0, nil
+	return code, nil
 }

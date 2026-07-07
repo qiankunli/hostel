@@ -26,9 +26,9 @@ OpenSandbox execd 是主要设计参考。
 - **跨 exec 的延续走 workspace，不走 shell 内存**：控制面的既有契约就是文件——init_script 写 env 文件、后续每条 exec 由调用方拼 `source`；cwd 每次显式传。pod 档 `k8s exec`（每次新进程、无常驻 shell）跑同一套请求是决定性证据。由此 bed 与 pod 档 exec 语义同构，弱档可无差别替换中档。
 - **`/session` = 显式有状态会话**：调用方自己 create / 持有 / delete 的常驻 bash（REPL 式 `export`/`cd` 延续）；死了只影响自己。有状态是 opt-in 的例外，不是每个 exec 的默认。
 
-### 进程树（bed-init，演进中）
+### 进程树（bed-init；S1 已落地，S2 待 userns）
 
-目标形态——bed 的进程归属从"注册表扫 pgid"的约定升级为内核保证：
+bed 的进程归属从"注册表扫 pgid"的约定升级为内核保证：
 
 ```
 tini (pid=1)                      ← pod 级收尸兜底
@@ -46,7 +46,8 @@ tini (pid=1)                      ← pod 级收尸兜底
 - **对照基线 execd：平树，它没解决这个问题**。execd 的命令全是 daemon 直接孩子（`Setpgid` + pgid 杀），无 init 层无 subreaper；其 `interrupt.go` 里 pgid 回收复用、zombie 轮询探测的大段处理正是平树的代价——"杀干净"只能做成概率近似。bed-init 是超越 execd 的点，不是移植。
 - **一次买四样**：teardown = 杀 bed-init 树（在途命令、`nohup` 孤儿 daemon 全灭，注册表扫描降为兜底）；`ps f` 直读进程归属；per-bed cgroup（`resource-isolation.md`）天然挂点；suite 档升级时 bed-init 原位变成 `bwrap --unshare-pid` 里的 PID 1（bed 从"进程树"升为"常驻 namespace"），spawner 协议与 exec 语义均不变。
 - **amenity 监督内置于 daemon，不设独立 amenity-manager 进程**：pod 语义下 hostel 是主容器进程，hostel 死 = pod 重启，独立 manager 买不到任何存活性，只多一层 IPC 和"谁重启 manager"。`amenity.Registry` 升级为 supervisor（健康检查 → backoff 重启）；崩溃重启后的租约走**惰性重建**——tenant 标失效，下次 `AcquireTenant` 重建切片（bed 侧感知为一次"新开"），避免主动全量重建的重启风暴。
-- 分两步：**S1** spawner 版 bed-init（无 namespace，全档可用，堵 teardown 洞）→ **S2** suite 档持久 ns + PID-1（依赖 pod 放开 userns；当前每次 exec 的 bwrap 是各自新开 namespace，视图相同但实例不同）。旁路备忘：cgroup v2 `cgroup.kill` 无需 init 进程即可整组必死，但只管杀、不管收尸、升不了 S2——是将来的叠加而非替代。
+- 分两步：**S1（已落地）** spawner 版 bed-init——`--bed-init auto` 启动时探活、失败诚实降级回 daemon 内 fork（非 linux 开发环境）；命令与 /session shell 都在 bed 的 init 下，Pdeathsig 双向兜底（init 死→杀树；daemon 死→init 收到 SIGTERM 自杀带树）。**S2** suite 档持久 ns + PID-1（依赖 pod 放开 userns；当前每次 exec 的 bwrap 是各自新开 namespace，视图相同但实例不同）。旁路备忘：cgroup v2 `cgroup.kill` 无需 init 进程即可整组必死，但只管杀、不管收尸、升不了 S2——是将来的叠加而非替代。
+- **落地对照**（实现锚点）：Spawner seam 在 `internal/bed`（in-process / bedinit 两实现，teardown 走 spawner sweep）；init 本体在 `internal/bedinit`（`__bedinit` re-exec、单 wait 循环、SIGTERM 杀树）；amenity 崩溃监督已按上述"惰性重建 + backoff 门"落在 chromium 自身（watcher 观察 master context 死亡）。
 
 ## 三、通用 managed-service 框架
 

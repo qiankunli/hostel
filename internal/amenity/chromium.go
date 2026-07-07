@@ -87,6 +87,16 @@ type chromium struct {
 	masterCtl context.CancelFunc
 	tenants   map[string]*chromiumTenant
 	idleTimer *time.Timer
+
+	// Crash supervision (the supervisor is the amenity itself, in-daemon —
+	// docs/design.md 〈进程树〉): a watcher on the master context detects the
+	// browser dying and flips back to idle with tenants dropped, so the NEXT
+	// AcquireTenant lazily rebuilds its slice — no restart storm, and a bed
+	// simply sees a fresh browser. notBefore gates ensureRunning with
+	// exponential backoff so a crash-looping browser can't melt the pod.
+	crashCount int
+	lastCrash  time.Time
+	notBefore  time.Time
 }
 
 type chromiumTenant struct {
@@ -162,6 +172,12 @@ func (c *chromium) ensureRunning() error {
 	if c.state == StateRunning {
 		return nil
 	}
+	// Crash-loop guard: after the watcher recorded a death, restarts are gated.
+	// The error is the caller's signal to retry later — deliberately NOT a
+	// blocking sleep, which would pin c.mu and freeze every bed's actions.
+	if wait := time.Until(c.notBefore); wait > 0 {
+		return fmt.Errorf("amenity: chromium restart gated for %s (crash #%d)", wait.Round(time.Millisecond), c.crashCount)
+	}
 	base := context.Background()
 	if c.attach {
 		c.allocCtx, c.allocStop = chromedp.NewRemoteAllocator(base, c.cfg.CDPURL)
@@ -179,7 +195,40 @@ func (c *chromium) ensureRunning() error {
 		return fmt.Errorf("amenity: chromium start: %w", err)
 	}
 	c.state = StateRunning
+	go c.watchMaster(c.master) // crash detector for THIS instance
 	return nil
+}
+
+// watchMaster turns the master context's death into supervision: chromedp
+// cancels it when the browser process exits (crash) — and orderly stops cancel
+// it too, which onMasterGone tells apart by state.
+func (c *chromium) watchMaster(master context.Context) {
+	<-master.Done()
+	c.onMasterGone(master)
+}
+
+// onMasterGone handles one master-context death. Only an UNEXPECTED death of
+// the CURRENT instance counts as a crash: orderly stops (idle-stop timer,
+// stopLocked) already flipped state off Running before releasing the lock, and
+// a stale watcher's master no longer matches.
+func (c *chromium) onMasterGone(master context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.master != master || c.state != StateRunning {
+		return
+	}
+	now := time.Now()
+	if now.Sub(c.lastCrash) > 5*time.Minute {
+		c.crashCount = 0 // stable for a while: earlier crashes are history
+	}
+	c.crashCount++
+	c.lastCrash = now
+	backoff := time.Duration(1<<min(c.crashCount-1, 6)) * time.Second // 1s → 64s cap
+	c.notBefore = now.Add(backoff)
+	dropped := len(c.tenants)
+	c.stopLocked()
+	log.Printf("amenity: chromium died (crash #%d, %d tenant(s) dropped); restart gated for %s",
+		c.crashCount, dropped, backoff)
 }
 
 // stopLocked tears the browser down. Caller holds c.mu.

@@ -130,6 +130,46 @@ func TestRunForegroundIsolatesFailure(t *testing.T) {
 	}
 }
 
+// TestTeardownKillsInflightForeground locks in the spawner sweep: an in-flight
+// foreground command (which is NOT in the command registry) must die with its
+// bed. Before the Spawner seam, teardown only swept registry entries, so a
+// long-running foreground exec survived bed eviction — a process leak the pod
+// tier never had (deleting the pod kills everything).
+func TestTeardownKillsInflightForeground(t *testing.T) {
+	m := newTestManager(t)
+	b, _ := m.Resolve("conv-kill")
+
+	started := make(chan struct{})
+	done := make(chan int, 1)
+	go func() {
+		code, _ := m.RunForeground(context.Background(), b, "echo up; sleep 30", "", nil, 0, func(string) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+		})
+		done <- code
+	}()
+	select {
+	case <-started: // the sleep is running
+	case <-time.After(5 * time.Second):
+		t.Fatal("foreground command did not start")
+	}
+
+	if ok, err := m.Evict("conv-kill"); err != nil || !ok {
+		t.Fatalf("Evict: ok=%v err=%v", ok, err)
+	}
+	select {
+	case code := <-done:
+		if code == 0 {
+			t.Fatalf("killed command reported exit 0")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("in-flight foreground command escaped bed teardown")
+	}
+}
+
 func TestBackgroundCommandAndLogs(t *testing.T) {
 	m := newTestManager(t)
 	b, _ := m.Resolve("default")
