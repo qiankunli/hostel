@@ -34,6 +34,7 @@ import (
 	"github.com/qiankunli/go-stdx/shellx"
 
 	"github.com/qiankunli/hostel/internal/amenity"
+	"github.com/qiankunli/hostel/internal/fsops"
 	"github.com/qiankunli/hostel/internal/isolation"
 	"github.com/qiankunli/hostel/internal/store"
 )
@@ -48,6 +49,11 @@ type Bed struct {
 	// only part bed code can touch.
 	Workspace string
 	CreatedAt time.Time // survives evict/resume via snapshot meta
+
+	// paths converts between this bed's three path spaces (client / host /
+	// in-bed). THE place for any path stitching — callers must not rebuild
+	// MountPoint()+Rel+Join by hand (that's how the exec-cwd ENOENT happened).
+	paths fsops.Paths
 
 	mu          sync.Mutex
 	lastUsed    time.Time
@@ -80,6 +86,10 @@ func (b *Bed) LastUsed() time.Time {
 	defer b.mu.Unlock()
 	return b.lastUsed
 }
+
+// Paths converts between this bed's path spaces (client / host / in-bed).
+// Immutable value set at creation; safe without the lock.
+func (b *Bed) Paths() fsops.Paths { return b.paths }
 
 // RecordCommand adds one finished run (foreground, session or background) to
 // the bed's usage profile. Failed runs count too — they are load all the same.
@@ -259,7 +269,8 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if restored {
 		profile.LastRestoreMs = restoreMs
 	}
-	b := &Bed{ID: id, Dir: bedDir, Workspace: dataDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell)}
+	b := &Bed{ID: id, Dir: bedDir, Workspace: dataDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell),
+		paths: fsops.NewPaths(dataDir, m.iso.MountPoint())}
 	m.beds[id] = b
 	return b, nil
 }
@@ -498,11 +509,11 @@ func (m *Manager) CollectIdle(timeout time.Duration) []string {
 // --- shell sessions (spec /session: stateful bash inside the bed) ---
 
 // CreateShell starts a new stateful shell session in the bed and returns its id.
-// hostCwd, when non-empty, is the starting directory (already resolved+confined
+// cwdInBed, when non-empty, is the starting directory (already resolved+confined
 // by the caller via fsops).
-func (m *Manager) CreateShell(b *Bed, hostCwd string) (string, error) {
+func (m *Manager) CreateShell(b *Bed, cwdInBed string) (string, error) {
 	b.touch()
-	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.iso, isolation.Workspace{Path: b.Workspace}, hostCwd)
+	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.iso, isolation.Workspace{Path: b.Workspace}, cwdInBed)
 	if err != nil {
 		return "", err
 	}
@@ -574,17 +585,17 @@ func (b *Bed) DeleteShell(id string) bool {
 
 // buildCommand constructs an isolated `bash -c <command>` for the bed. envs are
 // appended to the daemon environment; cwd (host path) overrides the workspace.
-func (m *Manager) buildCommand(b *Bed, command, hostCwd string, envs map[string]string) (*exec.Cmd, error) {
+func (m *Manager) buildCommand(b *Bed, command, cwdInBed string, envs map[string]string) (*exec.Cmd, error) {
 	b.touch()
 	// Apply cwd with a `cd` INSIDE the command (same mechanism the session shell
-	// uses), NOT via cmd.Dir. Under suite hostCwd is a sandbox-internal path
+	// uses), NOT via cmd.Dir. Under suite cwdInBed is a sandbox-internal path
 	// (/workspace/…) that doesn't exist on the carrier host, so setting it as
 	// the outer (bwrap) process's Dir makes ForkExec's chdir fail with ENOENT
 	// ("bedinit: spawn: fork: no such file or directory"). The cd runs in the
 	// command's own view — inside bwrap under suite, directly under direct —
-	// where hostCwd is valid (web.resolveCwd materialized the dir via EnsureDir).
-	if hostCwd != "" {
-		command = "cd -- " + shellx.Quote(hostCwd) + " && { " + command + " ; }"
+	// where cwdInBed is valid (web.resolveCwd materialized the dir via EnsureDir).
+	if cwdInBed != "" {
+		command = "cd -- " + shellx.Quote(cwdInBed) + " && { " + command + " ; }"
 	}
 	cmd := exec.Command(m.shellPath, "-c", command)
 	if err := m.iso.Wrap(cmd, isolation.Workspace{Path: b.Workspace}); err != nil {
@@ -607,8 +618,8 @@ func (m *Manager) buildCommand(b *Bed, command, hostCwd string, envs map[string]
 // spawner, returning the proc and the read end of its combined stdout+stderr.
 // The pipe is explicit (not StdoutPipe) so the raw child-side fd can cross a
 // process boundary when the spawner is the bed's init.
-func (m *Manager) startOneShot(b *Bed, command, hostCwd string, envs map[string]string) (Proc, *os.File, error) {
-	cmd, err := m.buildCommand(b, command, hostCwd, envs)
+func (m *Manager) startOneShot(b *Bed, command, cwdInBed string, envs map[string]string) (Proc, *os.File, error) {
+	cmd, err := m.buildCommand(b, command, cwdInBed, envs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -630,8 +641,8 @@ func (m *Manager) startOneShot(b *Bed, command, hostCwd string, envs map[string]
 }
 
 // StartCommand launches a one-shot command in the bed and registers it.
-func (m *Manager) StartCommand(b *Bed, command, hostCwd string, envs map[string]string, timeout time.Duration, onLine func(string)) (*Command, error) {
-	proc, out, err := m.startOneShot(b, command, hostCwd, envs)
+func (m *Manager) StartCommand(b *Bed, command, cwdInBed string, envs map[string]string, timeout time.Duration, onLine func(string)) (*Command, error) {
+	proc, out, err := m.startOneShot(b, command, cwdInBed, envs)
 	if err != nil {
 		return nil, err
 	}
@@ -658,8 +669,8 @@ func (m *Manager) StartCommand(b *Bed, command, hostCwd string, envs map[string]
 // shared stateful shell, where exactly those constructs tore the whole session
 // down ("shell: session exited during run"); the persistent shell now serves
 // only the explicit /session endpoint.
-func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, hostCwd string, envs map[string]string, timeout time.Duration, onLine func(string)) (int, error) {
-	proc, out, err := m.startOneShot(b, command, hostCwd, envs)
+func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, cwdInBed string, envs map[string]string, timeout time.Duration, onLine func(string)) (int, error) {
+	proc, out, err := m.startOneShot(b, command, cwdInBed, envs)
 	if err != nil {
 		return -1, err
 	}
