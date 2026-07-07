@@ -14,11 +14,35 @@ OpenSandbox execd 是主要设计参考。
 
 ## 二、核心模型：bed
 
-- **bed = 隔离单元 = 对外一个 sandbox**：一个 workspace 目录 + 一个常驻 shell + 自己的 mount namespace（bwrap 下）。名字与 hostel 对称。
+- **bed = 隔离单元 = 对外一个 sandbox**：一个 workspace 目录 + 自己的 mount namespace（bwrap 下）+ 归属于它的进程（一次性 exec、显式 session shell、amenity 租约）。名字与 hostel 对称。
 - **默认 bed 兜底**：请求不带 bed id → 落到 `default` bed。调用方可完全无视 bed 概念（单租户体验）。OpenSandbox spec 不强制 session 概念，故 bed 不与其冲突。
 - **bed 路由**：HTTP header `X-Hostel-Bed`（或 query `bed`），缺省 default。
 - 一个 pod 只用 default bed = 独占；多 bed = 共享，每 bed 仍有私有 ns / workspace / shell state。
 - **idle GC**：bed 空闲超时回收（默认 30min，可配；default bed 永不回收）。
+
+### exec 模型：状态住文件系统，进程短命或显式持有
+
+- **`/command` = bed 隔离内的一次性进程**（execd 同款）：每次 fork 全新 `bash -c`，前台流式等待、后台注册分离，只差 wait 模式。调用方脚本的 `set -e` / `exit` / `trap` 是合法输入，与自己的进程共存亡，**不可能波及 bed 的其它执行**。曾让前台搭常驻 shell 的便车（省一次 fork、cwd/env "免费"延续），代价是任何一个脚本的 `exit` 都拆掉共享会话、连坐后续所有 exec（真实故障：AS skill batch-sync 以 `set -euo pipefail` 开头，一步失败即杀会话）——无状态端点不得偷用有状态实现。
+- **跨 exec 的延续走 workspace，不走 shell 内存**：控制面的既有契约就是文件——init_script 写 env 文件、后续每条 exec 由调用方拼 `source`；cwd 每次显式传。pod 档 `k8s exec`（每次新进程、无常驻 shell）跑同一套请求是决定性证据。由此 bed 与 pod 档 exec 语义同构，弱档可无差别替换中档。
+- **`/session` = 显式有状态会话**：调用方自己 create / 持有 / delete 的常驻 bash（REPL 式 `export`/`cd` 延续）；死了只影响自己。有状态是 opt-in 的例外，不是每个 exec 的默认。
+
+### 进程树（bed-init，演进中）
+
+目标形态——bed 的进程归属从"注册表扫 pgid"的约定升级为内核保证：
+
+```
+tini (pid=1)                      ← pod 级收尸兜底
+ └─ hostel (daemon)
+     ├─ chromium (amenity)        ← pod 级共享，按 bed 切租，不进任何 bed 的树
+     ├─ bed-init [bed A]          ← 每 bed 一个：fork 命令、收尸、死前杀光子树
+     │    ├─ exec command         ← 一次 exec 一个
+     │    └─ session shell
+     └─ bed-init [bed B] ...
+```
+
+- **bed-init 必须是 spawner**（hostel 经 IPC 让它 fork，输出 fd 传回）：Linux 里爹由谁 fork 决定，光设 subreaper 收不到不在自己子树里的进程。用极小 Go 进程（re-exec `hostel bedinit`）走结构化 IPC——不用 shell 当 init，stdin 带内协议是已被故障验证的脆弱面。
+- **一次买四样**：teardown = 杀 bed-init 树（在途命令、`nohup` 孤儿 daemon 全灭，注册表扫描降为兜底）；`ps f` 直读进程归属；per-bed cgroup（`resource-isolation.md`）天然挂点；suite 档升级时 bed-init 原位变成 `bwrap --unshare-pid` 里的 PID 1（bed 从"进程树"升为"常驻 namespace"），spawner 协议与 exec 语义均不变。
+- 分两步：**S1** subreaper 版（全档可用，堵 teardown 洞）→ **S2** suite 档持久 ns + PID-1（依赖 pod 放开 userns；当前每次 exec 的 bwrap 是各自新开 namespace，视图相同但实例不同）。
 
 ## 三、通用 managed-service 框架
 
@@ -53,8 +77,8 @@ type ManagedService interface {
 - `/ping`、`/healthz`（isolator 名 + 可用性 + bed 数）
 - `/files/*`：info、mv、permissions、search、replace、upload、download、DELETE
 - `/directories/*`：list、create、delete
-- `/command`（SSE）：前台走常驻 shell（有状态）；后台走独立隔离进程 + `/command/status/{id}` + `/command/{id}/logs`
-- `/session`：bash 会话 create / run / delete（= bed 常驻 shell 的显式句柄）
+- `/command`（SSE）：前台/后台都是一次性隔离进程（见〈exec 模型〉），只差 wait 模式；后台带 `/command/status/{id}` + `/command/{id}/logs`
+- `/session`：bash 会话 create / run / delete（显式有状态会话，常驻 shell 只存在于此）
 - `/v1/beds`：CRUD + capabilities（hostel 特有，bed 管理）
 
 **v1 不做（v1.1+）**：`/code`（委托 Jupyter，AS 用不上，砍）、`/pty` WS、`/v1/isolated/*` 的 diff/commit/persist（execd 自己也没实现）。
@@ -114,4 +138,4 @@ bed 的三个正交维度各有专门文档，本文只留一句定位：
 
 ## 十一、Roadmap（v1.1+）
 
-数据隔离补强（`data-isolation.md`，先行）· S3 Store 持久化（`persistence.md`）· per-bed cgroup（`resource-isolation.md`，推后）· 数据隔离分档 dorm/room/suite + auto 路由 + ceiling probe（room=landlock，见 data-isolation.md）· bwrap 安全纵深（seccomp memfd / 真 setuid）· overlay CoW（临时层）· PTY WS · Jupyter amenity 实例 · 交互动作全集 · 上层调度系统对接 · 产品化外壳（API 版本化、独立发布）。
+数据隔离补强（`data-isolation.md`，先行）· S3 Store 持久化（`persistence.md`）· bed-init 进程树 S1/S2（见〈进程树〉，S1 先行）· per-bed cgroup（`resource-isolation.md`，推后，挂 bed-init）· 数据隔离分档 dorm/room/suite + auto 路由 + ceiling probe（room=landlock，见 data-isolation.md）· bwrap 安全纵深（seccomp memfd / 真 setuid）· overlay CoW（临时层）· PTY WS · Jupyter amenity 实例 · 交互动作全集 · 上层调度系统对接 · 产品化外壳（API 版本化、独立发布）。
