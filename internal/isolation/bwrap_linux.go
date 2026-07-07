@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 // bwrap confines each command under bubblewrap. Mount view per
@@ -59,12 +60,7 @@ func newBwrap(facts HostFacts, workspaceRoot string) Isolator {
 		log.Printf("isolation: cannot create workspace root %s: %v", workspaceRoot, err)
 	}
 
-	var masks []string
-	for _, p := range defaultMaskCandidates {
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			masks = append(masks, p)
-		}
-	}
+	masks := resolveMaskPaths(defaultMaskCandidates)
 	if err := bwrapSmoke(path, workspaceRoot, masks); err != nil {
 		log.Printf("isolation: bwrap found but unusable (%v)", err)
 		// Point the operator at the usual k8s cause: userns is on yet bwrap
@@ -79,6 +75,35 @@ func newBwrap(facts HostFacts, workspaceRoot string) Isolator {
 		return unavailable{name: "bwrap", lvl: Suite}
 	}
 	return &bwrap{path: path, root: workspaceRoot, maskPaths: masks}
+}
+
+// resolveMaskPaths filters candidates to existing directories and dedupes them
+// by their symlink-resolved real path. The dedup matters on a typical k8s pod
+// where /var/run is a symlink to /run: /run/secrets and /var/run/secrets then
+// name the SAME directory, and masking both with --tmpfs makes bwrap fail once
+// the first tmpfs replaces the shared target ("Can't mkdir /var/run/secrets:
+// No such file or directory") — which silently drops the whole carrier from
+// suite to a weaker tier. Keeping the first candidate per real path (list order
+// = priority) still hides both names through the one surviving mount.
+func resolveMaskPaths(candidates []string) []string {
+	var masks []string
+	seen := make(map[string]bool, len(candidates))
+	for _, p := range candidates {
+		fi, err := os.Stat(p)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			real = p
+		}
+		if seen[real] {
+			continue
+		}
+		seen[real] = true
+		masks = append(masks, p)
+	}
+	return masks
 }
 
 // bwrapSmoke runs `true` under the exact argv shape used for real commands —
