@@ -168,7 +168,7 @@ capabilities endpoint.
 
 ## Container image
 
-`build/Dockerfile` is a multi-stage build: a static, pure-Go hostel binary on a
+`deploy/docker/Dockerfile` is a multi-stage build: a static, pure-Go hostel binary on a
 `debian-slim` runtime that bundles the two optional facilities — **bubblewrap**
 (the `suite` level) and **chromium** (the browser amenity). Both stay optional:
 hostel probes them at boot and degrades honestly, so a locked-down pod without

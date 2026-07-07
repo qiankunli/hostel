@@ -59,13 +59,13 @@ smoke: build ## Boot on a scratch port and curl the core endpoints end to end
 	echo "smoke OK"
 
 image: ## Build the container image (bwrap + chromium)
-	docker build -f build/Dockerfile -t $(IMAGE) --build-arg VERSION=$(VERSION) .
+	docker build -f deploy/docker/Dockerfile -t $(IMAGE) --build-arg VERSION=$(VERSION) .
 
 image-lean: ## Build the lean image (bwrap only, no browser amenity)
-	docker build -f build/Dockerfile -t $(IMAGE)-lean --build-arg VERSION=$(VERSION) --build-arg WITH_CHROMIUM=false .
+	docker build -f deploy/docker/Dockerfile -t $(IMAGE)-lean --build-arg VERSION=$(VERSION) --build-arg WITH_CHROMIUM=false .
 
 image-multiarch: ## Build + push a multi-arch image (needs buildx + a registry; set IMAGE=repo/name:tag)
-	docker buildx build -f build/Dockerfile --platform $(PLATFORMS) \
+	docker buildx build -f deploy/docker/Dockerfile --platform $(PLATFORMS) \
 		-t $(IMAGE) --build-arg VERSION=$(VERSION) --push .
 
 clean: ## Remove build artifacts and the dev workspace
