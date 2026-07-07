@@ -67,6 +67,15 @@ func newBwrap(facts HostFacts, workspaceRoot string) Isolator {
 	}
 	if err := bwrapSmoke(path, workspaceRoot, masks); err != nil {
 		log.Printf("isolation: bwrap found but unusable (%v)", err)
+		// Point the operator at the usual k8s cause: userns is on yet bwrap
+		// dies at mount because containerd's default AppArmor profile denies
+		// mount(2). Surfaced here AND in /healthz (HostFacts.apparmor_profile)
+		// so the fix (an AppArmor-unconfined annotation on the carrier pod) is
+		// discoverable without shelling in.
+		if facts.AppArmorProfile != "" && facts.UnprivilegedUserns {
+			log.Printf("isolation: suite blocked despite unprivileged userns — AppArmor profile %q likely denies mount; "+
+				"grant the pod an AppArmor-unconfined annotation to reach suite (else degrading to a lower tier)", facts.AppArmorProfile)
+		}
 		return unavailable{name: "bwrap", lvl: Suite}
 	}
 	return &bwrap{path: path, root: workspaceRoot, maskPaths: masks}

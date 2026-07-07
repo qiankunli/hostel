@@ -35,6 +35,16 @@ type HostFacts struct {
 	BwrapPath          string `json:"bwrap_path"`          // resolved bubblewrap binary ("" = not found)
 	UnprivilegedUserns bool   `json:"unprivileged_userns"` // kernel hint: unprivileged user namespaces allowed
 	CgroupV2           bool   `json:"cgroup_v2"`           // unified cgroup v2 hierarchy present
+	// AppArmorProfile is this process's AppArmor confinement label ("" = none /
+	// unconfined / AppArmor absent; e.g. "cri-containerd.apparmor.d (enforce)").
+	// The fact behind "userns is allowed yet bwrap still dies at mount": in
+	// k8s, containerd's default profile denies mount(2), vetoing suite even
+	// though the kernel permits unprivileged userns. Deliberately a DISCLOSED
+	// fact rather than a deployment requirement — customer clusters can't be
+	// assumed to accept an AppArmor-exemption annotation (non-AppArmor distro
+	// nodes may even reject annotated pods), so hostel degrades honestly and
+	// this field tells the operator why.
+	AppArmorProfile string `json:"apparmor_profile"`
 }
 
 // HasCap reports whether capability bit (e.g. capSETUID) is in the effective

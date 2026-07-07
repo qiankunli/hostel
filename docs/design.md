@@ -26,6 +26,16 @@ OpenSandbox execd 是主要设计参考。
 - **跨 exec 的延续走 workspace，不走 shell 内存**：控制面的既有契约就是文件——init_script 写 env 文件、后续每条 exec 由调用方拼 `source`；cwd 每次显式传。pod 档 `k8s exec`（每次新进程、无常驻 shell）跑同一套请求是决定性证据。由此 bed 与 pod 档 exec 语义同构，弱档可无差别替换中档。
 - **`/session` = 显式有状态会话**：调用方自己 create / 持有 / delete 的常驻 bash（REPL 式 `export`/`cd` 延续）；死了只影响自己。有状态是 opt-in 的例外，不是每个 exec 的默认。
 
+### 路径一致性：agent 传的路径就是 bed 内路径
+
+**对外契约**：调用方（上层调度、planit 注入、agent 发 exec）把 bed 当独享机器——`/workspace` 就是"我的工作区"，`/workspace/skills` 就是"我的 skill"。这不是 sandctl 一家的约定，是 sync + planit 路径注入 + agent bash 三方共享的心智，pod 档下天然成立（一 pod 一 sandbox，`/workspace` 就是那份 workspace）。弱档要无差别替换 pod 档，必须原样兑现：**同 pod 内 conv1 的 `/workspace` 与 conv2 的 `/workspace` 是两份不同数据，互不可见**。
+
+**兑现方式：`/workspace` 规范挂载（suite）**。opaque agent bash 里的字面 `/workspace/skills` 无法被 hostel 改写（file API / workdir 能经 fsops rebase，bash 内绝对路径不能），只有 mount namespace 能让它物理落进 bed——`--bind <root>/<bedID> /workspace` + tmpfs 遮蔽兄弟。`/`（`/usr /opt /bin /etc` 工具链、node、`/opt/sandbox/commands`）仍是 carrier pod 的共享只读根，agent 工具链照旧可见；隔离只加在 `/workspace` 与兄弟目录上。room/landlock、dorm 造不了挂载点，给不了这层——这是 `/workspace` 契约对 suite 的硬依赖。
+
+**降级：诚实披露，不假装**。环境到不了 suite 时，`/workspace` 隔离不成立（landlock 仍锁死跨 bed 读写，但 agent 的字面 `/workspace/skills` 会落到共享路径、被拒），hostel 不静默给出"路径其实是共享的"假象——capabilities/healthz 报 `workspace_mount: false` + `isolation.effective`，上层据此决策（是否接受降级、或换能到 suite 的环境）。是"如实上报 + 调用方决定"，不是"拒绝服务"：结构化 file API、相对路径 exec 在低档仍可用，受影响的是"字面 `/workspace` 绝对路径 in bash"这一类。
+
+**k8s pod 内够到 suite 的三道闸**（真实集群踩点，前两道 hostel 自解、见 `data-isolation.md`〈k8s pod 内可达性〉）：`--unshare-user`（非特权 pod 建 mount ns）+ `--ro-bind /proc`（绕 masked /proc，弃 pidns）+ **AppArmor 豁免**（containerd 默认 profile deny mount，是部署项，由上层按集群策略自适应，非 hostel 硬性要求；探不过时 `apparmor_profile` 进 healthz 点名）。三点均无需特权。
+
 ### 进程树（bed-init；S1 已落地，S2 待 userns）
 
 bed 的进程归属从"注册表扫 pgid"的约定升级为内核保证：

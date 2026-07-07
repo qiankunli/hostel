@@ -61,6 +61,27 @@ func TestBuildBwrapArgsMasksSiblingsBeforeBind(t *testing.T) {
 	}
 }
 
+// TestBuildBwrapArgsK8sReachable locks in the two flags that let suite work in
+// an ordinary (non-privileged) k8s pod: a user namespace (else root bwrap hits
+// EPERM on the privileged clone) and NO pid namespace + a bound /proc (else the
+// procfs remount fails under k8s's masked /proc). Regressing either silently
+// drops suite back to a lower tier on every real cluster.
+func TestBuildBwrapArgsK8sReachable(t *testing.T) {
+	argv := buildBwrapArgs("/ws", "/ws/b", nil, nil)
+	if !slices.Contains(argv, "--unshare-user") {
+		t.Errorf("missing --unshare-user (suite needs userns in a non-privileged pod); argv=%v", argv)
+	}
+	if slices.Contains(argv, "--unshare-pid") {
+		t.Errorf("--unshare-pid present: forces a procfs remount that fails under k8s masked /proc")
+	}
+	if indexOfSeq(argv, "--ro-bind", "/proc", "/proc") < 0 {
+		t.Errorf("/proc must be RO-bound (not --proc) to avoid remounting under masked /proc; argv=%v", argv)
+	}
+	if slices.Contains(argv, "--proc") {
+		t.Errorf("--proc present: remounts procfs, which masked /proc forbids")
+	}
+}
+
 // The workspace root may itself be /workspace (default config). The sequence
 // must still be mask-then-bind so the bed's own dir replaces the mount point.
 func TestBuildBwrapArgsRootEqualsMountPoint(t *testing.T) {

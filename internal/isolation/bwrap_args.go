@@ -31,9 +31,19 @@ const BwrapMountPoint = "/workspace"
 // command). Segment order is a contract — bwrap applies mounts in argv order
 // and later mounts cover earlier ones (the masking below depends on it):
 //
-//  1. Namespace flags (mount ns is implicit; net stays shared in v1)
+//  1. Namespaces. --unshare-user is REQUIRED to reach suite in an ordinary
+//     (non-privileged) k8s pod: bwrap running as root would otherwise try a
+//     privileged clone(NEWNS) and hit EPERM (no CAP_SYS_ADMIN); with a user
+//     namespace it needs no host privilege, only the kernel's unprivileged
+//     userns. We deliberately DON'T --unshare-pid: k8s masks /proc, and inside
+//     a userns the kernel forbids mounting a fresh procfs over a masked one
+//     ("mount proc: Operation not permitted"). A pid namespace is defence-in-
+//     depth, not part of the data-isolation (path) contract, so we drop it and
+//     bind the host /proc read-only instead. (uts/ipc unshares are cheap and
+//     don't touch mounts.)
 //  2. --ro-bind / /            — RO host root: toolchains stay usable
-//  3. --dev /dev, --proc /proc, --tmpfs /tmp — fresh device/proc/tmp
+//  3. --dev /dev, --ro-bind /proc /proc, --tmpfs /tmp — fresh dev/tmp; /proc
+//     is bound (not --proc) so no procfs remount is needed under masked /proc
 //  4. Masking: --tmpfs over workspaceRoot (sibling beds cease to exist),
 //     and over each maskPath (host user data / mounted secrets)
 //  5. --bind <bed workspace> /workspace — own data only, canonical name
@@ -46,12 +56,12 @@ const BwrapMountPoint = "/workspace"
 func buildBwrapArgs(workspaceRoot, wsPath string, maskPaths, environ []string) []string {
 	argv := []string{
 		// 1.
-		"--unshare-pid", "--unshare-uts", "--unshare-ipc",
+		"--unshare-user", "--unshare-uts", "--unshare-ipc",
 		// 2.
 		"--ro-bind", "/", "/",
 		// 3.
 		"--dev", "/dev",
-		"--proc", "/proc",
+		"--ro-bind", "/proc", "/proc",
 		"--tmpfs", "/tmp",
 	}
 	// 4. Mask BEFORE binding our workspace: if workspaceRoot were masked after,

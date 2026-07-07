@@ -44,7 +44,27 @@ func osFacts() HostFacts {
 	f.KernelRelease = kernelRelease()
 	f.UnprivilegedUserns = unprivilegedUserns()
 	f.CgroupV2 = cgroupV2()
+	f.AppArmorProfile = apparmorProfile()
 	return f
+}
+
+// apparmorProfile reads this process's AppArmor confinement label.
+// "unconfined" and absence (no LSM attr) both normalize to "" — only an
+// actual confining profile is a fact worth surfacing. Newer kernels expose
+// /proc/self/attr/apparmor/current; older ones only the legacy shared path.
+func apparmorProfile() string {
+	for _, p := range []string{"/proc/self/attr/apparmor/current", "/proc/self/attr/current"} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		label := strings.TrimSpace(string(data))
+		if label == "" || label == "unconfined" {
+			return ""
+		}
+		return label
+	}
+	return ""
 }
 
 // readEffectiveCaps parses CapEff from /proc/self/status (0 on any error).

@@ -25,9 +25,9 @@ cwd          ← /workspace
 对应 argv 骨架（锚点：`internal/isolation/bwrap_linux.go`）：
 
 ```
-bwrap --unshare-pid --unshare-uts --unshare-ipc \
+bwrap --unshare-user --unshare-uts --unshare-ipc \
   --ro-bind / / \
-  --dev /dev --proc /proc --tmpfs /tmp \
+  --dev /dev --ro-bind /proc /proc --tmpfs /tmp \
   --tmpfs <workspace-root> \            # 遮蔽所有 bed 目录
   --tmpfs /root --tmpfs /home \         # 遮蔽宿主用户数据（及存在时的 /run/secrets、/var/run/secrets）
   --bind <workspace-root>/<bedID> /workspace \  # 只挂自己，且给规范名
@@ -36,6 +36,13 @@ bwrap --unshare-pid --unshare-uts --unshare-ipc \
 ```
 
 顺序敏感：`--tmpfs <workspace-root>` 必须在 `--ro-bind / /` 之后（后挂的盖前面的），`--bind ... /workspace` 与遮蔽无冲突（挂载点不同）。
+
+**k8s pod 内可达性（真实集群踩点）**：以上 argv 有两处不是随手选的，是让 suite 在**普通非特权 pod** 里够得着的硬前提——
+
+- **`--unshare-user`（而非无 userns）**：容器里 hostel 以 root 跑，无 `CAP_SYS_ADMIN`；不开 userns 时 bwrap 走特权 `clone(NEWNS)` 直接 EPERM。开 user namespace 后建 mount ns 无需宿主特权，只要内核允许非特权 userns（主流默认）。
+- **`--ro-bind /proc /proc`（而非 `--unshare-pid` + `--proc /proc`）**：k8s 把容器 `/proc` 的部分路径 mask 成只读；userns 内内核禁止在 masked proc 上重挂新 procfs（`mount proc: Operation not permitted`）。pid namespace 属安全纵深、不是数据隔离（路径契约）的一部分，故弃之，改 bind 宿主 `/proc`。
+
+**第三道闸——AppArmor（部署项，非 hostel 能自解）**：节点启用 AppArmor 时，containerd 默认 profile（`cri-containerd.apparmor.d`）**deny mount**——userns 开着、上面 argv 也对，bwrap 仍死在 `Failed to make / slave: Permission denied`。hostel 探不过就诚实降级到 room/dorm，并把 `HostFacts.apparmor_profile` 报进 `/healthz`、boot 日志点名（"userns 在、疑似 AppArmor 拦截"）。放开需给 carrier pod 打 `container.apparmor.security.beta.kubernetes.io/<容器>: unconfined` annotation——**不作为 hostel 的硬性部署要求**（客户集群未必接受该 annotation），由上层（sandctl 建 carrier 时按 k8s 版本+准入策略自适应）决定带不带。三点全不需要特权（无 CAP_SYS_ADMIN、无 privileged）。
 
 ## 三、关键设计
 
