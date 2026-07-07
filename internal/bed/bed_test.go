@@ -840,3 +840,15 @@ func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 		t.Fatalf("CreatedAt not preserved across restart: %v vs %v", b2.CreatedAt, created)
 	}
 }
+
+func TestShortID(t *testing.T) {
+	cases := map[string]string{
+		"default": "default",
+		"sandbox-019f3cab442f7435abe5a27f3436859a": "…3436859a",
+	}
+	for in, want := range cases {
+		if got := ShortID(in); got != want {
+			t.Errorf("ShortID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
