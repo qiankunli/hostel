@@ -63,11 +63,11 @@ type Shell struct {
 	dead  bool
 }
 
-// startShell launches the shell confined by iso to ws via the spawner. hostCwd,
+// startShell launches the shell confined by iso to ws via the spawner. cwdInBed,
 // when set, becomes the starting directory via an initial `cd`. Stdio is
 // explicit os.Pipe pairs (not StdinPipe/StdoutPipe) so the raw fds can cross a
 // process boundary when the spawner is the bed's init.
-func startShell(sp Spawner, bedID, shellPath string, iso isolation.Isolator, ws isolation.Workspace, hostCwd string) (*Shell, error) {
+func startShell(sp Spawner, bedID, shellPath string, iso isolation.Isolator, ws isolation.Workspace, cwdInBed string) (*Shell, error) {
 	cmd := exec.Command(shellPath, "--noprofile", "--norc")
 	if err := iso.Wrap(cmd, ws); err != nil {
 		return nil, err
@@ -97,9 +97,9 @@ func startShell(sp Spawner, bedID, shellPath string, iso isolation.Isolator, ws 
 	}
 
 	s := &Shell{proc: proc, stdin: inW, lines: make(chan string, 64)}
-	if hostCwd != "" {
+	if cwdInBed != "" {
 		// Best-effort initial cwd; a failure surfaces in the first run's output.
-		_, _ = io.WriteString(inW, "cd -- "+shellx.Quote(hostCwd)+" || true\n")
+		_, _ = io.WriteString(inW, "cd -- "+shellx.Quote(cwdInBed)+" || true\n")
 	}
 	// Single long-lived reader → lines channel.
 	go func() {

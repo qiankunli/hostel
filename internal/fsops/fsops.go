@@ -76,9 +76,11 @@ type Permission struct {
 	Mode  int    `json:"mode"`
 }
 
-// Ops is rooted at one bed's workspace.
+// Ops is rooted at one bed's workspace: Paths for the path spaces plus the
+// actual file operations (which always act on host paths, as the daemon).
 type Ops struct {
-	root string
+	paths Paths
+	root  string // == paths.Root(); kept as a field for the hot internal uses
 	// uid/gid of the workspace dir when it differs from the daemon's euid
 	// (uid-isolated beds), else -1. Mechanism-independent invariant: whatever
 	// lands in a bed's workspace belongs to the bed — fsops runs as the
@@ -87,9 +89,11 @@ type Ops struct {
 	uid, gid int
 }
 
-// New returns file ops confined to root (the bed workspace host dir).
+// New returns file ops confined to root (the bed workspace host dir). File ops
+// never need the mount view, so the embedded Paths carries no mount point;
+// exec-side callers use the bed's own Paths for that.
 func New(root string) *Ops {
-	o := &Ops{root: root, uid: -1, gid: -1}
+	o := &Ops{paths: NewPaths(root, ""), root: root, uid: -1, gid: -1}
 	if fi, err := os.Lstat(root); err == nil {
 		if uid, gid, ok := ownerOf(fi); ok && uid != os.Geteuid() {
 			o.uid, o.gid = uid, gid
@@ -156,41 +160,11 @@ func (o *Ops) EnsureDir(dir string) error {
 }
 
 // Resolve maps a client path to a host path under the workspace, rejecting
-// escapes. Exported for exec cwd resolution.
-func (o *Ops) Resolve(p string) (string, error) {
-	if p == "" {
-		return "", fmt.Errorf("fsops: empty path")
-	}
-	if strings.HasPrefix(p, "~") {
-		return "", fmt.Errorf("fsops: %q: home-relative paths are not supported", p)
-	}
-	rel := p
-	if path.IsAbs(p) {
-		switch {
-		case p == VirtualPrefix:
-			rel = "."
-		case strings.HasPrefix(p, VirtualPrefix+"/"):
-			rel = strings.TrimPrefix(p, VirtualPrefix+"/")
-		default:
-			return "", fmt.Errorf("fsops: %q is outside the bed workspace (%s)", p, VirtualPrefix)
-		}
-	}
-	// Normalize under a fake root to neutralize any ".." segments.
-	clean := path.Clean("/" + rel)
-	full := filepath.Join(o.root, filepath.FromSlash(clean))
-	if r, err := filepath.Rel(o.root, full); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("fsops: path %q escapes workspace", p)
-	}
-	return full, nil
-}
+// escapes. Exported for exec cwd resolution. (Delegates to Paths — the one
+// place that owns path-space conversion.)
+func (o *Ops) Resolve(p string) (string, error) { return o.paths.FromClient(p) }
 
-func (o *Ops) virtual(full string) string {
-	rel, err := filepath.Rel(o.root, full)
-	if err != nil || rel == "." {
-		return VirtualPrefix
-	}
-	return path.Join(VirtualPrefix, filepath.ToSlash(rel))
-}
+func (o *Ops) virtual(full string) string { return o.paths.ToClient(full) }
 
 func (o *Ops) info(full string, li os.FileInfo) FileInfo {
 	typ := "file"

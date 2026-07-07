@@ -19,8 +19,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -43,41 +41,32 @@ type RunCommandRequest struct {
 	Envs       map[string]string `json:"envs,omitempty"`
 }
 
-// resolveCwd maps a client cwd (virtual /workspace path) to the directory the
-// bed's SHELL should cd into, or "" when unset. Under direct that's the host
-// dir; under bwrap the workspace is mounted at the canonical mount point, so
-// the shell needs the in-sandbox path (the host dir doesn't exist in its mount
-// namespace). Validation (escape rejection) is fsops.Resolve either way.
+// resolveCwd maps a client cwd (virtual /workspace path) to the in-bed
+// directory the command should cd into, or "" when unset. All path-space
+// conversion lives in the bed's Paths — no stitching here. The dir is
+// materialized (EnsureDir, owner-aware) because a fresh bed's workspace starts
+// empty and a cd into a missing dir would fail.
 // Returns false (after writing an error) on an invalid path.
 func (s *Server) resolveCwd(c *gin.Context, b *bed.Bed, ops *fsops.Ops, cwd string) (string, bool) {
 	if cwd == "" {
 		return "", true
 	}
-	host, err := ops.Resolve(cwd)
+	host, err := b.Paths().FromClient(cwd)
 	if err != nil {
 		badRequest(c, err.Error())
 		return "", false
 	}
-	// A caller may name a workspace subdirectory that doesn't exist yet — the
-	// bed's workspace starts with just its root. Spawning into a missing cwd
-	// fails deep in the spawner with an opaque ENOENT ("fork: no such file or
-	// directory"), so materialize the dir here. Safe: ops.Resolve already
-	// confined `host` inside this bed's workspace.
 	if err := ops.EnsureDir(host); err != nil {
 		runtimeError(c, "prepare workdir: "+err.Error())
 		return "", false
 	}
-	mp := s.mgr.Isolator().MountPoint()
-	if mp == "" {
-		return host, true
-	}
-	rel, err := filepath.Rel(b.Workspace, host)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		// Unreachable after ops.Resolve confinement; refuse rather than guess.
+	inBed, err := b.Paths().InBed(host)
+	if err != nil {
+		// Unreachable after FromClient confinement; refuse rather than guess.
 		badRequest(c, "cwd outside the bed workspace")
 		return "", false
 	}
-	return path.Join(mp, filepath.ToSlash(rel)), true
+	return inBed, true
 }
 
 // POST /command — SSE stream. Foreground runs in the bed's shared stateful
@@ -96,7 +85,7 @@ func (s *Server) runCommand(c *gin.Context) {
 		badRequest(c, "missing 'command'")
 		return
 	}
-	hostCwd, ok := s.resolveCwd(c, b, ops, req.Cwd)
+	cwdInBed, ok := s.resolveCwd(c, b, ops, req.Cwd)
 	if !ok {
 		return
 	}
@@ -104,7 +93,7 @@ func (s *Server) runCommand(c *gin.Context) {
 	log.Printf("hostel exec: bed=%s tier=%s bg=%v cwd=%q cmd=%q", b.ID, s.mgr.Isolator().Name(), req.Background, req.Cwd, logSummary(req.Command))
 
 	if req.Background {
-		cmd, err := s.mgr.StartCommand(b, req.Command, hostCwd, req.Envs, timeout, nil)
+		cmd, err := s.mgr.StartCommand(b, req.Command, cwdInBed, req.Envs, timeout, nil)
 		if err != nil {
 			log.Printf("hostel exec error: bed=%s cwd=%q err=%v", b.ID, req.Cwd, err)
 			runtimeError(c, err.Error())
@@ -123,7 +112,7 @@ func (s *Server) runCommand(c *gin.Context) {
 	// was the "shell: session exited during run" failure on skill batch-sync).
 	sse := newSSE(c)
 	start := time.Now()
-	exitCode, err := s.mgr.RunForeground(c.Request.Context(), b, req.Command, hostCwd, req.Envs, timeout, func(line string) {
+	exitCode, err := s.mgr.RunForeground(c.Request.Context(), b, req.Command, cwdInBed, req.Envs, timeout, func(line string) {
 		sse.send(StreamEvent{Type: EventStdout, Text: line})
 	})
 	if err != nil {
@@ -154,13 +143,13 @@ func logSummary(s string) string {
 
 // wrapWithCwd prefixes a subshell cd + env exports so a foreground command runs
 // with the requested cwd/env without permanently mutating the shared shell.
-func wrapWithCwd(command, hostCwd string, envs map[string]string) string {
+func wrapWithCwd(command, cwdInBed string, envs map[string]string) string {
 	prefix := ""
 	for k, v := range envs {
 		prefix += "export " + k + "=" + shellx.Quote(v) + "; "
 	}
-	if hostCwd != "" {
-		prefix += "cd -- " + shellx.Quote(hostCwd) + " && "
+	if cwdInBed != "" {
+		prefix += "cd -- " + shellx.Quote(cwdInBed) + " && "
 	}
 	if prefix == "" {
 		return command
@@ -242,11 +231,11 @@ func (s *Server) sessionCreate(c *gin.Context) {
 	}
 	var req createSessionRequest
 	_ = c.ShouldBindJSON(&req)
-	hostCwd, ok := s.resolveCwd(c, b, ops, req.Cwd)
+	cwdInBed, ok := s.resolveCwd(c, b, ops, req.Cwd)
 	if !ok {
 		return
 	}
-	id, err := s.mgr.CreateShell(b, hostCwd)
+	id, err := s.mgr.CreateShell(b, cwdInBed)
 	if err != nil {
 		runtimeError(c, err.Error())
 		return
@@ -274,7 +263,7 @@ func (s *Server) sessionRun(c *gin.Context) {
 		badRequest(c, "missing 'command'")
 		return
 	}
-	hostCwd, ok := s.resolveCwd(c, b, ops, req.Cwd)
+	cwdInBed, ok := s.resolveCwd(c, b, ops, req.Cwd)
 	if !ok {
 		return
 	}
@@ -287,7 +276,7 @@ func (s *Server) sessionRun(c *gin.Context) {
 	log.Printf("hostel session run: bed=%s session=%s cwd=%q cmd=%q", b.ID, c.Param("sessionId"), req.Cwd, logSummary(req.Command))
 	sse := newSSE(c)
 	start := time.Now()
-	res, err := sh.Run(ctx, wrapWithCwd(req.Command, hostCwd, nil), func(line string) {
+	res, err := sh.Run(ctx, wrapWithCwd(req.Command, cwdInBed, nil), func(line string) {
 		sse.send(StreamEvent{Type: EventStdout, Text: line})
 	})
 	b.RecordCommand(time.Since(start))
