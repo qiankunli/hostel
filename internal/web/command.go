@@ -17,6 +17,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"path"
 	"path/filepath"
@@ -100,13 +101,16 @@ func (s *Server) runCommand(c *gin.Context) {
 		return
 	}
 	timeout := time.Duration(req.TimeoutMs) * time.Millisecond
+	log.Printf("hostel exec: bed=%s tier=%s bg=%v cwd=%q cmd=%q", b.ID, s.mgr.Isolator().Name(), req.Background, req.Cwd, logSummary(req.Command))
 
 	if req.Background {
 		cmd, err := s.mgr.StartCommand(b, req.Command, hostCwd, req.Envs, timeout, nil)
 		if err != nil {
+			log.Printf("hostel exec error: bed=%s cwd=%q err=%v", b.ID, req.Cwd, err)
 			runtimeError(c, err.Error())
 			return
 		}
+		log.Printf("hostel exec started: bed=%s id=%s (background)", b.ID, cmd.ID)
 		sse := newSSE(c)
 		sse.send(StreamEvent{Type: EventInit, Text: cmd.ID})
 		sse.send(StreamEvent{Type: EventComplete})
@@ -123,6 +127,7 @@ func (s *Server) runCommand(c *gin.Context) {
 		sse.send(StreamEvent{Type: EventStdout, Text: line})
 	})
 	if err != nil {
+		log.Printf("hostel exec error: bed=%s cwd=%q err=%v", b.ID, req.Cwd, err)
 		if sse.hasStarted() {
 			sse.send(StreamEvent{Type: EventError, Error: err.Error()})
 		} else {
@@ -130,11 +135,21 @@ func (s *Server) runCommand(c *gin.Context) {
 		}
 		return
 	}
+	log.Printf("hostel exec done: bed=%s exit=%d dur=%dms", b.ID, exitCode, time.Since(start).Milliseconds())
 	sse.send(StreamEvent{
 		Type:          EventComplete,
 		ExecutionTime: time.Since(start).Milliseconds(),
 		ExitCode:      &exitCode,
 	})
+}
+
+// logSummary flattens a command to one short line for a log field.
+func logSummary(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > 120 {
+		return s[:120] + "…"
+	}
+	return s
 }
 
 // wrapWithCwd prefixes a subshell cd + env exports so a foreground command runs
@@ -269,6 +284,7 @@ func (s *Server) sessionRun(c *gin.Context) {
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.Timeout)*time.Millisecond)
 		defer cancel()
 	}
+	log.Printf("hostel session run: bed=%s session=%s cwd=%q cmd=%q", b.ID, c.Param("sessionId"), req.Cwd, logSummary(req.Command))
 	sse := newSSE(c)
 	start := time.Now()
 	res, err := sh.Run(ctx, wrapWithCwd(req.Command, hostCwd, nil), func(line string) {
@@ -276,6 +292,7 @@ func (s *Server) sessionRun(c *gin.Context) {
 	})
 	b.RecordCommand(time.Since(start))
 	if err != nil {
+		log.Printf("hostel session run error: bed=%s session=%s err=%v", b.ID, c.Param("sessionId"), err)
 		if sse.hasStarted() {
 			sse.send(StreamEvent{Type: EventError, Error: err.Error()})
 		} else {
@@ -283,6 +300,7 @@ func (s *Server) sessionRun(c *gin.Context) {
 		}
 		return
 	}
+	log.Printf("hostel session run done: bed=%s session=%s exit=%d dur=%dms", b.ID, c.Param("sessionId"), res.ExitCode, time.Since(start).Milliseconds())
 	sse.send(StreamEvent{Type: EventComplete, ExecutionTime: time.Since(start).Milliseconds(), ExitCode: &res.ExitCode})
 }
 
