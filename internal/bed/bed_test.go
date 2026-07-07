@@ -99,6 +99,37 @@ func TestShellExitCode(t *testing.T) {
 	}
 }
 
+// TestRunForegroundIsolatesFailure locks in the fresh-process foreground model:
+// a one-shot command that carries `set -e` + a failing step (the shape of AS
+// skill batch-sync) must return its exit code and leave the bed fully usable.
+// Before the fix this ran in the shared foreground shell, where set -e / exit
+// tore the whole session down ("shell: session exited during run").
+func TestRunForegroundIsolatesFailure(t *testing.T) {
+	m := newTestManager(t)
+	b, _ := m.Resolve("default")
+	ctx := context.Background()
+
+	code, err := m.RunForeground(ctx, b, "set -euo pipefail\nfalse\necho unreached", "", nil, 0, nil)
+	if err != nil {
+		t.Fatalf("RunForeground: %v", err)
+	}
+	if code == 0 {
+		t.Fatal("want non-zero exit from set -e failure, got 0")
+	}
+
+	// The bed is still fully usable for the next command (no session was killed).
+	var out strings.Builder
+	code2, err := m.RunForeground(ctx, b, "echo alive", "", nil, 0, func(l string) { out.WriteString(l) })
+	if err != nil || code2 != 0 || !strings.Contains(out.String(), "alive") {
+		t.Fatalf("bed unusable after set -e command: code=%d err=%v out=%q", code2, err, out.String())
+	}
+
+	// Explicit exit code propagates.
+	if code3, err := m.RunForeground(ctx, b, "exit 7", "", nil, 0, nil); err != nil || code3 != 7 {
+		t.Fatalf("exit code not propagated: code=%d err=%v", code3, err)
+	}
+}
+
 func TestBackgroundCommandAndLogs(t *testing.T) {
 	m := newTestManager(t)
 	b, _ := m.Resolve("default")
