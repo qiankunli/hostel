@@ -88,7 +88,7 @@ Flag（或 `HOSTEL_*` 环境变量）：`--addr` / `--workspace-root` / `--isola
 
 ## 容器镜像
 
-`build/Dockerfile` 多阶段构建:静态纯 Go 二进制 + `debian-slim` 运行时,内置两个可选设施——**bubblewrap**(`suite` 档)与 **chromium**(浏览器 amenity)。两者都是可选的:hostel 启动时 probe、探不到就诚实降级,受限 pod(无 namespace)照常服务。
+`deploy/docker/Dockerfile` 多阶段构建:静态纯 Go 二进制 + `debian-slim` 运行时,内置两个可选设施——**bubblewrap**(`suite` 档)与 **chromium**(浏览器 amenity)。两者都是可选的:hostel 启动时 probe、探不到就诚实降级,受限 pod(无 namespace)照常服务。
 
 ```bash
 make image                     # 完整镜像(bwrap + chromium),当前架构

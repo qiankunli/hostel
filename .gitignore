@@ -4,4 +4,4 @@
 /.devloop/
 
 # Internal (byted) build variant — never push to the open-source repo.
-build/Dockerfile.internal
+deploy/docker/Dockerfile.internal
