@@ -108,6 +108,19 @@ func main() {
 	}
 	mgr.SetLuggageLimits(cfg.LuggageHighBytes, cfg.LuggageLowBytes)
 
+	// Per-bed init spawner (docs/design.md 〈进程树〉 S1): auto probes once at
+	// boot; a failed probe (non-linux, odd deployment) is an honest downgrade
+	// to in-process forking, logged, never a startup failure.
+	if cfg.BedInit != "off" {
+		if exe, err := os.Executable(); err != nil {
+			log.Printf("hostel: bed-init disabled (executable path: %v)", err)
+		} else if err := mgr.EnableBedInit(exe); err != nil {
+			log.Printf("hostel: bed-init unavailable, using in-process spawner: %v", err)
+		} else {
+			log.Printf("hostel: bed-init spawner enabled")
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
