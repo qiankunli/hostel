@@ -19,10 +19,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/qiankunli/go-stdx/shellx"
@@ -54,7 +54,7 @@ func validBedID(id string) error {
 // Callers holding bed/manager locks may call Dead() safely for the same
 // reason. Never add code that holds mu while blocking.
 type Shell struct {
-	cmd   *exec.Cmd
+	proc  Proc
 	stdin io.WriteCloser
 	lines chan string // every output line; closed on EOF/exit
 
@@ -63,44 +63,54 @@ type Shell struct {
 	dead  bool
 }
 
-// startShell launches the shell confined by iso to ws. hostCwd, when set,
-// becomes the starting directory via an initial `cd`.
-func startShell(shellPath string, iso isolation.Isolator, ws isolation.Workspace, hostCwd string) (*Shell, error) {
+// startShell launches the shell confined by iso to ws via the spawner. hostCwd,
+// when set, becomes the starting directory via an initial `cd`. Stdio is
+// explicit os.Pipe pairs (not StdinPipe/StdoutPipe) so the raw fds can cross a
+// process boundary when the spawner is the bed's init.
+func startShell(sp Spawner, bedID, shellPath string, iso isolation.Isolator, ws isolation.Workspace, hostCwd string) (*Shell, error) {
 	cmd := exec.Command(shellPath, "--noprofile", "--norc")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := iso.Wrap(cmd, ws); err != nil {
 		return nil, err
 	}
-	stdin, err := cmd.StdinPipe()
+	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	outR, outW, err := os.Pipe()
 	if err != nil {
-		stdin.Close()
+		inR.Close()
+		inW.Close()
 		return nil, err
 	}
-	cmd.Stderr = cmd.Stdout // interleave, like a terminal
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
+	cmd.Stdin = inR
+	cmd.Stdout = outW
+	cmd.Stderr = outW // interleave, like a terminal
+	proc, err := sp.Start(bedID, cmd)
+	// The child holds its own copies now (or never will, on error): drop ours
+	// of the child-side ends — outW in particular, or the reader never EOFs.
+	inR.Close()
+	outW.Close()
+	if err != nil {
+		inW.Close()
+		outR.Close()
 		return nil, err
 	}
 
-	s := &Shell{cmd: cmd, stdin: stdin, lines: make(chan string, 64)}
+	s := &Shell{proc: proc, stdin: inW, lines: make(chan string, 64)}
 	if hostCwd != "" {
 		// Best-effort initial cwd; a failure surfaces in the first run's output.
-		_, _ = io.WriteString(stdin, "cd -- "+shellx.Quote(hostCwd)+" || true\n")
+		_, _ = io.WriteString(inW, "cd -- "+shellx.Quote(hostCwd)+" || true\n")
 	}
 	// Single long-lived reader → lines channel.
 	go func() {
-		r := bufio.NewReader(stdout)
+		r := bufio.NewReader(outR)
 		for {
 			line, err := r.ReadString('\n')
 			if line != "" {
 				s.lines <- line
 			}
 			if err != nil {
+				outR.Close()
 				s.mu.Lock()
 				s.dead = true
 				s.mu.Unlock()
@@ -109,7 +119,7 @@ func startShell(shellPath string, iso isolation.Isolator, ws isolation.Workspace
 			}
 		}
 	}()
-	go func() { _ = cmd.Wait() }() // reap; EOF above drives dead state
+	go func() { _, _ = proc.Wait() }() // reap; EOF above drives dead state
 	return s, nil
 }
 
@@ -125,8 +135,8 @@ func (s *Shell) Close() {
 	if s.stdin != nil {
 		_ = s.stdin.Close()
 	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
+	if s.proc != nil {
+		s.proc.Kill()
 	}
 }
 
