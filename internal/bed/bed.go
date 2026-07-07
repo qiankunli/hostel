@@ -20,6 +20,7 @@
 package bed
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/qiankunli/go-stdx/randx"
@@ -506,9 +508,11 @@ func (m *Manager) CreateShell(b *Bed, hostCwd string) (string, error) {
 	return id, nil
 }
 
-// foregroundShellID is the well-known session backing bed-agnostic /command
-// foreground runs, so cwd/env persist across a bed's commands without the
-// caller managing a session id.
+// foregroundShellID is the well-known session backing the explicit /session
+// foreground shell (cwd/env persist across its runs). NOTE: the one-shot
+// /command path no longer uses it — foreground /command now runs a fresh
+// isolated process (see Manager.RunForeground). Retained for /session and its
+// tests; a candidate for removal once /session is reworked.
 const foregroundShellID = "session-foreground"
 
 // ForegroundShell returns the bed's implicit foreground shell, starting it
@@ -602,4 +606,71 @@ func (m *Manager) StartCommand(b *Bed, command, hostCwd string, envs map[string]
 		}
 	}()
 	return c, nil
+}
+
+// RunForeground executes a one-shot command as a fresh, isolated `bash -c`
+// process (execd parity: /command is stateless), streams combined stdout+stderr
+// via onLine, and blocks until the process exits or ctx is cancelled. Returns
+// the process exit code (-1 on a non-exit failure).
+//
+// Unlike StartCommand it is NOT registered in the daemon-global command registry
+// (which never GCs — a per-exec entry there would leak) and reuses nothing: the
+// command runs in its OWN process, so a caller script's `set -e` / `exit` /
+// `trap` dies with it. The foreground /command path used to run in the bed's
+// shared stateful shell, where exactly those constructs tore the whole session
+// down ("shell: session exited during run"); the persistent shell now serves
+// only the explicit /session endpoint.
+func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, hostCwd string, envs map[string]string, timeout time.Duration, onLine func(string)) (int, error) {
+	cmd, err := m.buildCommand(b, command, hostCwd, envs)
+	if err != nil {
+		return -1, err
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true // kill the whole tree on timeout/cancel
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return -1, err
+	}
+	cmd.Stderr = cmd.Stdout // interleave, like the /command spec
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		return -1, err
+	}
+	kill := func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	if timeout > 0 {
+		t := time.AfterFunc(timeout, kill)
+		defer t.Stop()
+	}
+	// Client disconnect / shutdown cancels the run: kill the tree so a runaway
+	// command can't outlive its caller.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			kill()
+		case <-stop:
+		}
+	}()
+	reader := bufio.NewReader(stdout)
+	for {
+		line, rerr := reader.ReadString('\n')
+		if line != "" && onLine != nil {
+			onLine(line)
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	werr := cmd.Wait()
+	b.RecordCommand(time.Since(start))
+	if werr != nil {
+		if ee, ok := werr.(*exec.ExitError); ok {
+			return ee.ExitCode(), nil
+		}
+		return -1, werr
+	}
+	return 0, nil
 }

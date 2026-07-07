@@ -104,18 +104,15 @@ func (s *Server) runCommand(c *gin.Context) {
 		return
 	}
 
-	// Foreground: stateful shell run, streamed live.
-	sh, err := s.mgr.ForegroundShell(b)
-	if err != nil {
-		runtimeError(c, err.Error())
-		return
-	}
+	// Foreground: fresh, isolated one-shot process (execd parity), streamed live.
+	// NOT the shared /session shell — a caller script's set -e / exit / trap must
+	// die with its own process, never tear down the bed's stateful shell (that
+	// was the "shell: session exited during run" failure on skill batch-sync).
 	sse := newSSE(c)
 	start := time.Now()
-	res, err := sh.Run(c.Request.Context(), wrapWithCwd(req.Command, hostCwd, req.Envs), func(line string) {
+	exitCode, err := s.mgr.RunForeground(c.Request.Context(), b, req.Command, hostCwd, req.Envs, timeout, func(line string) {
 		sse.send(StreamEvent{Type: EventStdout, Text: line})
 	})
-	b.RecordCommand(time.Since(start))
 	if err != nil {
 		if sse.hasStarted() {
 			sse.send(StreamEvent{Type: EventError, Error: err.Error()})
@@ -127,7 +124,7 @@ func (s *Server) runCommand(c *gin.Context) {
 	sse.send(StreamEvent{
 		Type:          EventComplete,
 		ExecutionTime: time.Since(start).Milliseconds(),
-		ExitCode:      &res.ExitCode,
+		ExitCode:      &exitCode,
 	})
 }
 
