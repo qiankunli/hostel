@@ -33,6 +33,7 @@ import (
 
 	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/bed"
+	"github.com/qiankunli/hostel/internal/bedinit"
 	"github.com/qiankunli/hostel/internal/config"
 	"github.com/qiankunli/hostel/internal/isolation"
 	"github.com/qiankunli/hostel/internal/store"
@@ -52,6 +53,8 @@ func main() {
 			os.Exit(runConfine(os.Args[2:]))
 		case isolation.AsUserArg: // uid: __asuser <uid> <dataDir> -- <cmd>...
 			os.Exit(runAsUser(os.Args[2:]))
+		case bedinit.InitArg: // per-bed init/spawner: __bedinit --socket S --bed B
+			os.Exit(bedinit.Run(os.Args[2:]))
 		}
 	}
 
