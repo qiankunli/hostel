@@ -69,6 +69,9 @@ type Shell struct {
 // process boundary when the spawner is the bed's init.
 func startShell(sp Spawner, bedID, shellPath string, iso isolation.Isolator, ws isolation.Workspace, cwdInBed string) (*Shell, error) {
 	cmd := exec.Command(shellPath, "--noprofile", "--norc")
+	// Same bed-id handle as one-shot commands (see buildCommand) — the session
+	// shell inherits the daemon env otherwise, which lacks the bed id.
+	cmd.Env = append(os.Environ(), "HOSTEL_BED_ID="+bedID)
 	if err := iso.Wrap(cmd, ws); err != nil {
 		return nil, err
 	}

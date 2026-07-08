@@ -625,13 +625,14 @@ func (m *Manager) buildCommand(b *Bed, command, cwdInBed string, envs map[string
 	// The OUTER process cwd must exist on the host; the bed's own workspace
 	// always does (the in-sandbox cwd is handled by the cd above / bwrap --chdir).
 	cmd.Dir = b.Workspace
-	if len(envs) > 0 {
-		env := os.Environ()
-		for k, v := range envs {
-			env = append(env, k+"="+v)
-		}
-		cmd.Env = env
+	// HOSTEL_BED_ID lets in-bed tooling address its OWN bed on the bed-scoped
+	// APIs (e.g. the playwright shim → POST /v1/beds/<id>/browser/*). Always
+	// present, since a bed can't otherwise learn its id from inside.
+	env := append(os.Environ(), "HOSTEL_BED_ID="+b.ID)
+	for k, v := range envs {
+		env = append(env, k+"="+v)
 	}
+	cmd.Env = env
 	return cmd, nil
 }
 
