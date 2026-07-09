@@ -21,6 +21,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -93,10 +94,14 @@ func TestUploadInfoDownloadRoundTrip(t *testing.T) {
 		t.Fatalf("info body = %v", info)
 	}
 
-	// download returns the bytes.
+	// download returns the bytes, with an explicit Content-Length so relays
+	// (e.g. to S3 presigned PUT) never see a chunked body of unknown size.
 	rec = do(t, s, "GET", "/files/download?path=/workspace/hi.txt", nil, nil)
 	if rec.Code != 200 || rec.Body.String() != "hello hostel" {
 		t.Fatalf("download = %d %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(len("hello hostel")) {
+		t.Fatalf("download Content-Length = %q", got)
 	}
 }
 
