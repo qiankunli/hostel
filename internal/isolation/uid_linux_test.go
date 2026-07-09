@@ -62,6 +62,12 @@ func TestCollectHostFactsSane(t *testing.T) {
 	if f.KernelRelease == "" {
 		t.Error("KernelRelease empty on Linux (uname should populate it)")
 	}
+	if f.EUID != os.Geteuid() {
+		t.Errorf("EUID = %d, want %d", f.EUID, os.Geteuid())
+	}
+	if f.EGID != os.Getegid() {
+		t.Errorf("EGID = %d, want %d", f.EGID, os.Getegid())
+	}
 	if f.LandlockABI < 0 {
 		t.Errorf("LandlockABI = %d, must be >= 0", f.LandlockABI)
 	}

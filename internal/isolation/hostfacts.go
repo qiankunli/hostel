@@ -14,7 +14,10 @@
 
 package isolation
 
-import "os/exec"
+import (
+	"os"
+	"os/exec"
+)
 
 // HostFacts is the boot-time snapshot of what THIS host offers the isolation
 // resolver: the probed, read-only truths behind the ceiling. Collected once in
@@ -30,6 +33,8 @@ import "os/exec"
 // the authoritative half.
 type HostFacts struct {
 	KernelRelease      string `json:"kernel_release"`      // uname release ("" off Linux)
+	EUID               int    `json:"euid"`                // effective uid of the hostel daemon process
+	EGID               int    `json:"egid"`                // effective gid of the hostel daemon process
 	EffectiveCaps      uint64 `json:"effective_caps"`      // CapEff bitmask from /proc/self/status
 	LandlockABI        int    `json:"landlock_abi"`        // Landlock ABI version; 0 = absent/unsupported
 	BwrapPath          string `json:"bwrap_path"`          // resolved bubblewrap binary ("" = not found)
@@ -59,6 +64,8 @@ func (f HostFacts) HasCap(bit uint) bool { return f.EffectiveCaps&(1<<bit) != 0 
 // per-OS by osFacts (all zero off Linux).
 func collectHostFacts() HostFacts {
 	f := osFacts()
+	f.EUID = os.Geteuid()
+	f.EGID = os.Getegid()
 	if p, err := exec.LookPath("bwrap"); err == nil {
 		f.BwrapPath = p
 	}
