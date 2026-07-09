@@ -226,6 +226,10 @@ func (s *Server) filesDownload(c *gin.Context) {
 		downloadErr(c, err)
 		return
 	}
+	// Explicit Content-Length: bodies larger than the net/http buffer are
+	// otherwise sent chunked, and consumers relaying the file to an S3
+	// presigned PUT need a known length (S3 rejects chunked uploads with 411).
+	c.Header("Content-Length", strconv.Itoa(len(data)))
 	c.Data(http.StatusOK, "application/octet-stream", data)
 }
 
