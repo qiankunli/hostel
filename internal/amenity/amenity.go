@@ -94,10 +94,25 @@ func (r *Registry) Find(name string) Amenity {
 	return nil
 }
 
-// ReleaseAll tears down every amenity's tenant for a bed. Best-effort — bed
-// teardown must not be blocked by one bad facility.
+// BedScopedSecrets is an optional amenity capability: credentials minted per
+// BED (not per tenant), e.g. the chromium CDP proxy token handed to every bed
+// process via spawn env. They must survive tenant recycling — browser/close
+// releases the tenant while the bed lives on, and long-running shells keep the
+// minted endpoint in env — so revocation is tied to bed teardown, not
+// ReleaseTenant.
+type BedScopedSecrets interface {
+	RevokeBedSecrets(bedID string)
+}
+
+// ReleaseAll tears down every amenity's tenant for a bed AND revokes its
+// bed-scoped secrets — this is the bed-teardown path (evict/purge), the one
+// place both lifecycles end together. Best-effort — bed teardown must not be
+// blocked by one bad facility.
 func (r *Registry) ReleaseAll(bedID string) {
 	for _, a := range r.List() {
 		_ = a.ReleaseTenant(bedID)
+		if s, ok := a.(BedScopedSecrets); ok {
+			s.RevokeBedSecrets(bedID)
+		}
 	}
 }
