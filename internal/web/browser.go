@@ -56,7 +56,7 @@ func (s *Server) browserInfo(c *gin.Context) {
 	if br == nil {
 		return
 	}
-	token, err := br.CDPToken(b.ID, b.Workspace)
+	token, err := br.CDPToken(b.ID)
 	if err != nil {
 		runtimeError(c, err.Error())
 		return
@@ -78,7 +78,7 @@ func (s *Server) browserInfo(c *gin.Context) {
 // GET /v1/cdp?bed=&t= — websocket upgrade → per-bed CDP proxy. Not bed-scoped
 // by path: playwright connectOverCDP passes the full url (incl. query) and
 // can't set headers, so the bed id + token ride the query. ServeCDP
-// authenticates the token against the bed's live tenant, so a guessed bed/token
+// authenticates the token against the bed-level secret, so a guessed bed/token
 // is refused there.
 func (s *Server) browserCDP(c *gin.Context) {
 	a := s.mgr.Amenities().Find("chromium")
@@ -93,13 +93,20 @@ func (s *Server) browserCDP(c *gin.Context) {
 		badRequest(c, "missing bed or token")
 		return
 	}
+	// Resolve before upgrading: ServeCDP ensures the tenant at dial time (the
+	// lazy browser boot point) and needs the bed's workspace for that create.
+	b, err := s.mgr.Resolve(bedID)
+	if err != nil {
+		respondBedError(c, err)
+		return
+	}
 	conn, _, _, err := ws.UpgradeHTTP(c.Request, c.Writer)
 	if err != nil {
 		// Response already partially written by the upgrader on failure.
 		log.Printf("hostel: cdp ws upgrade for bed=%s failed: %v", bedID, err)
 		return
 	}
-	if err := br.ServeCDP(conn, bedID, token); err != nil {
+	if err := br.ServeCDP(conn, b.ID, b.Workspace, token); err != nil {
 		log.Printf("hostel: cdp proxy for bed=%s ended: %v", bedID, err)
 	}
 }
