@@ -116,9 +116,9 @@ type chromium struct {
 	tenants   map[string]*chromiumTenant
 	// cdpSecrets are the bed-level proxy tokens, deliberately DECOUPLED from
 	// tenants: minting one (bed spawn env, browser/info) must not boot the
-	// browser, and a token must survive tenant recycling (crash, idle-stop) so
-	// env-injected endpoints stay valid for the bed's whole life. Dropped in
-	// ReleaseTenant — i.e. with the bed.
+	// browser, and a token must survive tenant recycling (crash, idle-stop,
+	// browser/close) so env-injected endpoints stay valid for the bed's whole
+	// life. Dropped only in RevokeBedSecrets — i.e. with the bed.
 	cdpSecrets map[string]string
 	idleTimer  *time.Timer
 
@@ -434,6 +434,15 @@ func (c *chromium) ServeCDP(conn net.Conn, bedID, workspace, token string) error
 	return proxyCDP(conn, upstream, bedID, string(contextID))
 }
 
+// RevokeBedSecrets implements BedScopedSecrets: the bed is going away, its
+// proxy token must not outlive it (bed ids can recur — "default" is a fixed
+// name — and a leaked stale token would authorize the next incarnation).
+func (c *chromium) RevokeBedSecrets(bedID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.cdpSecrets, bedID)
+}
+
 // AcquireTenant implements Amenity.
 func (c *chromium) AcquireTenant(bedID, workspace string) (Tenant, error) {
 	c.mu.Lock()
@@ -446,9 +455,10 @@ func (c *chromium) AcquireTenant(bedID, workspace string) (Tenant, error) {
 func (c *chromium) ReleaseTenant(bedID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// The proxy secret dies with the bed, not with the tenant — release is a
-	// bed-lifecycle event, so drop it here even when no tenant ever existed.
-	delete(c.cdpSecrets, bedID)
+	// Deliberately does NOT touch cdpSecrets: browser/close (bed action API)
+	// also lands here to recycle the slice, and the bed's env-injected proxy
+	// endpoint must keep working afterwards — the next dial just re-ensures a
+	// fresh tenant. Secrets die with the bed via RevokeBedSecrets.
 	t, ok := c.tenants[bedID]
 	if !ok {
 		return nil
