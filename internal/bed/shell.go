@@ -64,14 +64,14 @@ type Shell struct {
 }
 
 // startShell launches the shell confined by iso to ws via the spawner. cwdInBed,
-// when set, becomes the starting directory via an initial `cd`. Stdio is
+// when set, becomes the starting directory via an initial `cd`. env is the
+// bed-scoped environment (Manager.bedEnv) — the session shell would otherwise
+// inherit the daemon env, which lacks the bed identity and endpoints. Stdio is
 // explicit os.Pipe pairs (not StdinPipe/StdoutPipe) so the raw fds can cross a
 // process boundary when the spawner is the bed's init.
-func startShell(sp Spawner, bedID, shellPath string, iso isolation.Isolator, ws isolation.Workspace, cwdInBed string) (*Shell, error) {
+func startShell(sp Spawner, bedID, shellPath string, env []string, iso isolation.Isolator, ws isolation.Workspace, cwdInBed string) (*Shell, error) {
 	cmd := exec.Command(shellPath, "--noprofile", "--norc")
-	// Same bed-id handle as one-shot commands (see buildCommand) — the session
-	// shell inherits the daemon env otherwise, which lacks the bed id.
-	cmd.Env = append(os.Environ(), "HOSTEL_BED_ID="+bedID)
+	cmd.Env = env
 	if err := iso.Wrap(cmd, ws); err != nil {
 		return nil, err
 	}

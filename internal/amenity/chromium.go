@@ -64,16 +64,20 @@ type Browser interface {
 	Scroll(ctx context.Context, bedID, workspace string, dx, dy int) error
 	// Wait blocks until selector becomes visible (bounded by the action timeout).
 	Wait(ctx context.Context, bedID, workspace, selector string) error
-	// CDPToken ensures the bed's browser slice and returns the secret that
-	// authorizes its proxied CDP endpoint (see ServeCDP). The token is minted
-	// per tenant and dies with it — possession proves the caller got it from
-	// the bed-scoped /v1/browser/info, not by guessing a bed id.
-	CDPToken(bedID, workspace string) (string, error)
+	// CDPToken mints (or returns) the bed-level secret that authorizes the
+	// bed's proxied CDP endpoint (see ServeCDP). Mint-only: it never touches
+	// the tenant, so handing out endpoints (bed spawn env, browser/info) never
+	// boots the shared browser. The secret lives as long as the bed —
+	// possession proves the caller got it from hostel, not by guessing a bed
+	// id, and it stays valid across tenant recycling (crash, idle-stop).
+	CDPToken(bedID string) (string, error)
 	// ServeCDP bridges one already-upgraded websocket to the shared browser as
 	// bedID's tenant view: Target.* visibility is filtered to the bed's own
-	// browser contexts and Browser.close is refused. Blocks until either side
-	// closes. conn is always closed on return.
-	ServeCDP(conn net.Conn, bedID, token string) error
+	// browser contexts and Browser.close is refused. Ensures the bed's tenant
+	// on dial — the lazy boot point for eagerly-handed-out endpoints (workspace
+	// is needed for that create). Blocks until either side closes. conn is
+	// always closed on return.
+	ServeCDP(conn net.Conn, bedID, workspace, token string) error
 	ReleaseTenant(bedID string) error
 }
 
@@ -110,7 +114,13 @@ type chromium struct {
 	master    context.Context // chromedp browser-level context
 	masterCtl context.CancelFunc
 	tenants   map[string]*chromiumTenant
-	idleTimer *time.Timer
+	// cdpSecrets are the bed-level proxy tokens, deliberately DECOUPLED from
+	// tenants: minting one (bed spawn env, browser/info) must not boot the
+	// browser, and a token must survive tenant recycling (crash, idle-stop) so
+	// env-injected endpoints stay valid for the bed's whole life. Dropped in
+	// ReleaseTenant — i.e. with the bed.
+	cdpSecrets map[string]string
+	idleTimer  *time.Timer
 
 	// Crash supervision (the supervisor is the amenity itself, in-daemon —
 	// docs/design.md 〈进程树〉): a watcher on the master context detects the
@@ -128,10 +138,6 @@ type chromiumTenant struct {
 	contextID cdp.BrowserContextID
 	tabCtx    context.Context
 	tabStop   context.CancelFunc
-	// cdpToken authorizes the bed's proxied CDP endpoint. Minted with the
-	// tenant, handed out only via CDPToken (the bed-scoped browser/info path),
-	// dies with the tenant.
-	cdpToken string
 }
 
 func (t *chromiumTenant) Close() error {
@@ -154,7 +160,7 @@ func NewChromium(cfg ChromiumConfig) (Browser, bool) {
 	if cfg.ActionTimeout <= 0 {
 		cfg.ActionTimeout = 30 * time.Second
 	}
-	c := &chromium{cfg: cfg, state: StateIdle, tenants: map[string]*chromiumTenant{}}
+	c := &chromium{cfg: cfg, state: StateIdle, tenants: map[string]*chromiumTenant{}, cdpSecrets: map[string]string{}}
 
 	if cfg.CDPURL != "" {
 		c.attach = true
@@ -332,25 +338,27 @@ func (c *chromium) tenant(bedID, workspace string) (*chromiumTenant, error) {
 		tabStop()
 		return nil, fmt.Errorf("amenity: chromium attach tab for bed %s: %w", bedID, err)
 	}
-	t := &chromiumTenant{bedID: bedID, contextID: contextID, tabCtx: tabCtx, tabStop: tabStop,
-		cdpToken: randx.Hex(16)}
+	t := &chromiumTenant{bedID: bedID, contextID: contextID, tabCtx: tabCtx, tabStop: tabStop}
 	c.tenants[bedID] = t
 	return t, nil
 }
 
-// CDPToken implements Browser: ensure the bed's tenant and hand out the secret
-// that authorizes its proxied CDP endpoint.
-func (c *chromium) CDPToken(bedID, workspace string) (string, error) {
+// CDPToken implements Browser: mint (or return) the bed-level proxy secret.
+// Mint-only by design — no tenant, no browser boot; the lazy boot point is the
+// first proxy dial (ServeCDP). This is what lets hostel hand every bed its
+// endpoint eagerly (spawn env) while keeping the browser demand-started.
+func (c *chromium) CDPToken(bedID string) (string, error) {
 	if !c.proxyable() {
 		return "", fmt.Errorf("amenity: chromium CDP proxy unavailable (launch mode needs --chromium-debug-port)")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t, err := c.tenant(bedID, workspace)
-	if err != nil {
-		return "", err
+	if s, ok := c.cdpSecrets[bedID]; ok {
+		return s, nil
 	}
-	return t.cdpToken, nil
+	s := randx.Hex(16)
+	c.cdpSecrets[bedID] = s
+	return s, nil
 }
 
 // proxyable reports whether a stable upstream CDP endpoint exists: attach mode
@@ -396,22 +404,27 @@ func (c *chromium) upstreamWSURL(ctx context.Context) (string, error) {
 
 // ServeCDP implements Browser: authenticate the token, then bridge the client
 // websocket to the shared browser filtered to this bed's contexts.
-func (c *chromium) ServeCDP(conn net.Conn, bedID, token string) error {
+func (c *chromium) ServeCDP(conn net.Conn, bedID, workspace, token string) error {
 	defer conn.Close()
 	c.mu.Lock()
-	t, ok := c.tenants[bedID]
-	authorized := ok && token != "" && subtle.ConstantTimeCompare([]byte(t.cdpToken), []byte(token)) == 1
-	var contextID cdp.BrowserContextID
-	if authorized {
-		contextID = t.contextID
-	}
-	c.mu.Unlock()
+	secret, ok := c.cdpSecrets[bedID]
+	authorized := ok && token != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(token)) == 1
 	if !authorized {
-		// The token is minted with the tenant and only handed out via
-		// browser/info; a mismatch means a guessed bed id or a stale token
-		// (tenant re-created). Refuse — never fall back to unfiltered CDP.
+		c.mu.Unlock()
+		// The secret is only handed out via hostel (spawn env / browser/info);
+		// a mismatch means a guessed bed id or a token that outlived its bed.
+		// Refuse — never fall back to unfiltered CDP.
 		return fmt.Errorf("amenity: chromium CDP: unauthorized for bed %s", bedID)
 	}
+	// Authorized: ensure the tenant NOW. This is the lazy boot point — the
+	// browser starts on the first dial, not when the endpoint was handed out.
+	t, err := c.tenant(bedID, workspace)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	contextID := t.contextID
+	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	upstream, err := c.upstreamWSURL(ctx)
 	cancel()
@@ -433,6 +446,9 @@ func (c *chromium) AcquireTenant(bedID, workspace string) (Tenant, error) {
 func (c *chromium) ReleaseTenant(bedID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The proxy secret dies with the bed, not with the tenant — release is a
+	// bed-lifecycle event, so drop it here even when no tenant ever existed.
+	delete(c.cdpSecrets, bedID)
 	t, ok := c.tenants[bedID]
 	if !ok {
 		return nil

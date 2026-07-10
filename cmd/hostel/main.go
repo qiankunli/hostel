@@ -22,15 +22,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/qiankunli/hostel/extensions"
 	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/bed"
 	"github.com/qiankunli/hostel/internal/bedinit"
@@ -44,6 +47,16 @@ import (
 var version = "dev"
 
 func main() {
+	// Multi-call dispatch (extensions/): the image symlinks in-bed tool names
+	// (e.g. playwright, playwright-cli) to this binary and argv[0] selects the
+	// tool — one binary, tools ride along for the cost of a symlink. Must be
+	// first: an extension invocation is never a daemon invocation.
+	if name := filepath.Base(os.Args[0]); name != "hostel" {
+		if run, ok := extensions.Lookup(name); ok {
+			os.Exit(run(os.Args[1:]))
+		}
+	}
+
 	// Isolation re-exec confiners (room mechanisms): before anything else, since
 	// the argv is `hostel <subcmd> ... -- <cmd>...`, not flags. The daemon must
 	// keep its privileges, so both mechanisms confine a self-re-exec, not hostel.
@@ -108,6 +121,12 @@ func main() {
 		log.Fatalf("hostel: init bed manager: %v", err)
 	}
 	mgr.SetLuggageLimits(cfg.LuggageHighBytes, cfg.LuggageLowBytes)
+	// Per-bed browser endpoint injection (PLAYWRIGHT_MCP_CDP_ENDPOINT): beds
+	// reach hostel over loopback (shared pod net ns). Minting is lazy-safe, so
+	// this is on whenever the browser amenity can proxy.
+	if addr := loopbackAddr(cfg.Addr); addr != "" {
+		mgr.SetCDPAdvertise(addr)
+	}
 
 	// Per-bed init spawner (docs/design.md 〈进程树〉 S1): auto probes once at
 	// boot; a failed probe (non-linux, odd deployment) is an honest downgrade
@@ -284,6 +303,20 @@ func runAsUser(args []string) int {
 		return 126
 	}
 	return 0 // unreachable
+}
+
+// loopbackAddr rewrites the listen address into the loopback host:port a bed
+// can dial: wildcard or empty hosts become 127.0.0.1, concrete hosts stay.
+// Empty on unparseable input — callers treat that as "don't advertise".
+func loopbackAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // healthCheck GETs the local /healthz for the image HEALTHCHECK — no external
