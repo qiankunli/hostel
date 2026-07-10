@@ -27,13 +27,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/qiankunli/hostel/extensions"
 	"github.com/qiankunli/hostel/internal/amenity"
 	"github.com/qiankunli/hostel/internal/bed"
 	"github.com/qiankunli/hostel/internal/bedinit"
@@ -47,16 +45,6 @@ import (
 var version = "dev"
 
 func main() {
-	// Multi-call dispatch (extensions/): the image symlinks in-bed tool names
-	// (e.g. playwright, playwright-cli) to this binary and argv[0] selects the
-	// tool — one binary, tools ride along for the cost of a symlink. Must be
-	// first: an extension invocation is never a daemon invocation.
-	if name := filepath.Base(os.Args[0]); name != "hostel" {
-		if run, ok := extensions.Lookup(name); ok {
-			os.Exit(run(os.Args[1:]))
-		}
-	}
-
 	// Isolation re-exec confiners (room mechanisms): before anything else, since
 	// the argv is `hostel <subcmd> ... -- <cmd>...`, not flags. The daemon must
 	// keep its privileges, so both mechanisms confine a self-re-exec, not hostel.

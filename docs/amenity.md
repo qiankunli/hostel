@@ -97,35 +97,12 @@ bed 内 playwright  ──connectOverCDP──►  ws://127.0.0.1:8872/v1/cdp?be
 - **鉴权**：token 随 tenant 铸造、只经 browser/info 下发、随 tenant 消亡；`ServeCDP` 用常量时间比对，错 bed / 陈旧 token 直接拒，绝不退化成无过滤 CDP。
 - **稳定 upstream**：launch 模式 chromedp 自己的 ws 端口是随机的（其 API 不暴露），故固定 `--remote-debugging-port`（`--chromium-debug-port`，默认 9222）让代理有稳定 upstream；每次代理会话经 `/json/version` 重解析 ws（浏览器崩溃/idle 重启后端口不变、ws 变）。attach 模式直接用 `CDPURL` 作 upstream。
 - **诚实边界（P0）**：过滤挡"误串门"（半可信 agent、非对抗），够当前信任模型；对抗性场景下 CDP 协议面大、grey-list 可能有未覆盖的越权指令，capabilities 应披露此档浏览器隔离强度。真对抗需白名单化 + 每指令校验，属后续。
-- **bed 内 CLI 客户端**：`extensions/playwright`——编进 hostel 二进制的多调用工具
-  （镜像把 `playwright`、`playwright-cli` 软链到 hostel，argv[0] 分发，见
-  `extensions/` 包注释），按动词路由：页面动词交给真 `@playwright/cli`（session
-  未开时用 `open` 自举一次——env 已注入，open 即连到本 bed 切片，与 Chromium 的
-  惰性启动对齐）、`install*` no-op（浏览器已烘焙、bed 内非 root 装不动系统依赖）、
-  `open <url>` 改写为 goto（实测 session 态下 open 会另起新浏览器）、其余透传真
-  playwright CLI。agent 在 bed 里即兴敲的 playwright 系命令由此全部落到本 bed 的
-  代理切片上，而不是各起各的浏览器。
-
-```mermaid
-flowchart LR
-    subgraph bedA["bed A（bwrap 沙箱）"]
-        agentA["agent"] -->|模型习惯| pwA["playwright / playwright-cli<br/>（软链 → hostel, argv0 分发）"]
-        pwA -->|页面动词| cliA["@playwright/cli daemon<br/>（每 bed 一个）"]
-        pwA -.->|npx / 非页面子命令| oneshot(["一次性 pinned build<br/>短命·无端口·避免使用"])
-    end
-    subgraph hostelproc["hostel daemon（bed 沙箱外）"]
-        proxy["per-bed CDP 代理<br/>/v1/cdp?bed=&t="]
-        api["/v1/beds/:id/browser/*"]
-    end
-    subgraph shared["共享 Chromium（唯一常驻, :9222）"]
-        ctxA["BrowserContext A"]
-        ctxB["BrowserContext B"]
-    end
-    cliA -->|"open 自举<br/>（env 注入的 endpoint）"| proxy
-    caller["调用方 / 控制面"] --> api
-    proxy -->|只见本 bed context| ctxA
-    api -->|chromedp| ctxA
-```
+- **bed 内客户端由镜像装配方提供**（hostel 不内置）：镜像可以放一个 playwright
+  wrapper，把 agent 即兴敲的 playwright 系命令路由到真 `@playwright/cli`——它读
+  注入的 `PLAYWRIGHT_MCP_CDP_ENDPOINT`，`open` 一次即连到本 bed 切片（session 未开
+  时页面命令报 "is not open"，用 `open` 自举一次再重试即可，与 Chromium 的惰性启动
+  对齐）。注意 session 态下 `open <url>` 会另起新浏览器而非复用连接（实测），
+  wrapper 应改写为 `goto`。
 
 ### 5. 部署前提：launch 或 attach
 
@@ -135,7 +112,7 @@ launch 模式：镜像里带 chromium/chrome 二进制（`--chromium-path` 或 P
 
 已实现（`internal/amenity/`）：`Amenity` 接口（含 `State()` 生命周期：unavailable/idle/running）+ `Registry`（amenity manager）；**chromium** 首个实例——launch-or-attach boot 探测、惰性启动、每 bed 一个 BrowserContext（cookie/存储隔离）、下载与截图落 bed `data/`、last-tenant idle-stop 自停、崩溃/停后按需重启。北向 4 端点 `POST /v1/beds/:id/browser/{goto,screenshot,text,close}`（chromedp）；capabilities 报 `amenities: {chromium: idle|running}`。真浏览器 e2e 通过（两 bed context 隔离、截图路径落对 workspace、逃逸拒绝、idle-stop、重启）。
 
-另已实现（§6 的客户端侧）：per-bed CDP 代理（`chromium_cdp_proxy.go`，token 鉴权 + context 过滤）；bed 级 token 与 tenant 解耦（mint-only，拨号时才 ensure/启浏览器）；bed spawn env 注入 `PLAYWRIGHT_MCP_CDP_ENDPOINT`（`bed.Manager.bedEnv`）；`extensions/playwright` 多调用动词分发器。**待真机验证**：playwright 全动词真流量过 grey-list 代理（snapshot/eval 等会碰 Target.setAutoAttach 深水区）。
+另已实现（§6）：per-bed CDP 代理（`chromium_cdp_proxy.go`，token 鉴权 + context 过滤）；bed 级 token 与 tenant 解耦（mint-only，拨号时才 ensure/启浏览器）；bed spawn env 注入 `PLAYWRIGHT_MCP_CDP_ENDPOINT`（`bed.Manager.bedEnv`）。**待真机验证**：playwright 全动词真流量过 grey-list 代理（snapshot/eval 等会碰 Target.setAutoAttach 深水区）。
 
 一个实现注意（写进代码注释）：per-bed tab 必须先在**长命 tabCtx** 上 attach 一次，否则首个动作把 target 绑到派生的超时 context，cancel 即 detach，后续动作全 hang。context 管理动作走 **browser executor**（`cdp.WithExecutor(ctx, ...Browser)`），否则 `Not allowed`。
 

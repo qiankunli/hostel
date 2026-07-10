@@ -60,12 +60,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/hostel /usr/local/bin/hostel
-# In-bed tools ride the hostel binary multi-call style (extensions/): a tool
-# is just a symlink, argv[0] picks it. The playwright dispatcher additionally
-# needs the real npm CLIs (playwright, @playwright/cli) + node in richer
-# images — this reference image only wires the names.
-RUN ln -s hostel /usr/local/bin/playwright && \
-    ln -s hostel /usr/local/bin/playwright-cli
 
 # Runs as root by default (like execd): bwrap must mkdir the /workspace mount
 # point on the read-only root and needs user namespaces, and chromium runs with
