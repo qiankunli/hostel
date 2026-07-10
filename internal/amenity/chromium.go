@@ -212,7 +212,12 @@ func (c *chromium) ensureRunning() error {
 	} else {
 		opts := append(chromedp.DefaultExecAllocatorOptions[:],
 			chromedp.ExecPath(c.cfg.ExecPath),
-			chromedp.NoSandbox, // hostel often runs as root in a container; bed code can't reach this process anyway
+			// Chromium's own sandbox is unreliable in containers: mandatory-off as
+			// root, and needs userns/setuid otherwise. Reachability of this process
+			// from bed code is NOT a uid story anymore (runtime is often one non-root
+			// uid, beds keep the host pid ns) — it is governed by the semi-trusted
+			// model documented in docs/amenity.md ("诚实边界").
+			chromedp.NoSandbox,
 		)
 		if c.cfg.DebugPort > 0 {
 			// Fixed port so the per-bed CDP proxy has a stable upstream to dial;

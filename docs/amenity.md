@@ -94,6 +94,12 @@ bed 内 playwright  ──connectOverCDP──►  ws://127.0.0.1:8872/v1/cdp?be
 - **鉴权**：token 随 tenant 铸造、只经 browser/info 下发、随 tenant 消亡；`ServeCDP` 用常量时间比对，错 bed / 陈旧 token 直接拒，绝不退化成无过滤 CDP。
 - **稳定 upstream**：launch 模式 chromedp 自己的 ws 端口是随机的（其 API 不暴露），故固定 `--remote-debugging-port`（`--chromium-debug-port`，默认 9222）让代理有稳定 upstream；每次代理会话经 `/json/version` 重解析 ws（浏览器崩溃/idle 重启后端口不变、ws 变）。attach 模式直接用 `CDPURL` 作 upstream。
 - **诚实边界（P0）**：过滤挡"误串门"（半可信 agent、非对抗），够当前信任模型；对抗性场景下 CDP 协议面大、grey-list 可能有未覆盖的越权指令，capabilities 应披露此档浏览器隔离强度。真对抗需白名单化 + 每指令校验，属后续。
+- **bed 内 CLI 客户端**：`deploy/docker/playwright-wrapper.sh`——镜像装配方把它装成
+  `playwright` + `playwright-cli` 两个命令名，按动词路由：页面动词交给真
+  `@playwright/cli`（session 未打开时经 `browser/info` 懒 attach 到本 bed 切片，
+  与 Chromium 的惰性启动对齐）、`install` no-op（浏览器已烘焙、bed 内非 root 装不动
+  系统依赖）、其余透传真 playwright CLI。agent 在 bed 里即兴敲的 playwright 系命令
+  由此全部落到本 bed 的代理切片上，而不是各起各的浏览器。
 
 ### 5. 部署前提：launch 或 attach
 
