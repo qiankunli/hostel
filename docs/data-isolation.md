@@ -74,6 +74,8 @@ bed 已由 `X-Hostel-Bed` 选定后，所有房型共用同一套客户端路径
 
 路径字段和命令文本要分开处理：hostel 可以直接解析 file API path、cwd 等结构化字段，但不能可靠改写任意 shell command 字符串。如果要求命令里的绝对字面量（如 `cat /tmp/workspace/job/a.txt`）也命中同一 bed-local 文件，就必须由进程文件系统视图提供对应投影或 bind，不能靠字符串替换碰运气。
 
+**一致性的诚实边界**：跨隔离级别的路径一致性（同一个客户端路径，在 file API 与 bed 内进程两个通道、在三档房型之间都指向同一份数据）是我们**追求的方向，不是已兑现的保证**——没有 mount namespace（dorm/room），进程视图里的绝对字面量就落在宿主真实路径上，这条缝隙原理上补不掉。目前的态度是尽量收敛：结构化字段（path/cwd）三档严格一致，约定入口（HOME/TMPDIR 等 env）可注入统一，其余（如命令里写死的 `/tmp/x`）不强求——`/tmp` 这类本就是易失数据，值不得为它上重机制。
+
 ### 3. workspace-root 外部可配
 
 已支持：`--workspace-root` flag / `HOSTEL_WORKSPACE_ROOT` env（默认 `/workspace`）。参考 execd 的配置惯例：execd 走 `EXECD_ISOLATION_CONFIG` env → TOML 文件（`upper_root` 等）；hostel 当前配置项少，维持"每项一个 `HOSTEL_*` env"的直接形式，配置膨胀后再学 execd 收敛为单一 config 文件。
