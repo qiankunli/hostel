@@ -29,13 +29,14 @@ func TestResolveConfinement(t *testing.T) {
 		wantErr bool
 		wantAbs string // expected host path (when no error)
 	}{
-		{"a.txt", false, filepath.Join(root, "a.txt")},
-		{"/workspace/a.txt", false, filepath.Join(root, "a.txt")},
-		{"/workspace", false, root},
-		{"/workspace/sub/b", false, filepath.Join(root, "sub", "b")},
-		{"/workspace/../../etc/passwd", false, filepath.Join(root, "etc", "passwd")}, // .. neutralized under /workspace
-		{"../escape", false, filepath.Join(root, "escape")},                          // relative .. clamped to root, cannot escape
-		{"/etc/passwd", false, filepath.Join(root, "etc", "passwd")},                 // other absolute paths are bed-rooted
+		{"a.txt", false, filepath.Join(root, "workspace", "a.txt")}, // relative = workspace-relative
+		{"/workspace/a.txt", false, filepath.Join(root, "workspace", "a.txt")},
+		{"/workspace", false, filepath.Join(root, "workspace")}, // a real subdir, not an alias for the root
+		{"/workspace/sub/b", false, filepath.Join(root, "workspace", "sub", "b")},
+		{"/", false, root}, // the client's "/" is the bed's private root
+		{"/workspace/../../etc/passwd", false, filepath.Join(root, "etc", "passwd")}, // .. neutralized under the private root
+		{"../escape", false, filepath.Join(root, "escape")},                          // climbs out of the workspace but never out of the bed
+		{"/etc/passwd", false, filepath.Join(root, "etc", "passwd")},                 // absolute paths are bed-rooted
 		{"~/secrets", true, ""},
 		{"", true, ""},
 	}
@@ -152,7 +153,7 @@ func TestOwnerInheritance(t *testing.T) {
 		if err := o.Rename("a/b/c.txt", "f/moved.txt"); err != nil {
 			t.Fatalf("Rename into new dir: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(root, "f", "moved.txt")); err != nil {
+		if _, err := os.Stat(filepath.Join(root, "workspace", "f", "moved.txt")); err != nil {
 			t.Fatalf("moved file missing: %v", err)
 		}
 	})

@@ -121,6 +121,18 @@ func TestAbsolutePathAndCommandCwdShareBedRoot(t *testing.T) {
 		t.Fatalf("upload absolute path = %d %s", rec.Code, rec.Body.String())
 	}
 
+	// Echo symmetry ("own pod" contract): info reports the path exactly as sent,
+	// not rewritten to a /workspace canonical form.
+	rec = do(t, s, "GET", "/files/info?path="+clientPath, nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("info absolute path = %d %s", rec.Code, rec.Body.String())
+	}
+	var info map[string]map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &info)
+	if info[clientPath]["path"] != clientPath {
+		t.Fatalf("echo asymmetry: sent %q, reported %v", clientPath, info[clientPath]["path"])
+	}
+
 	rec = do(t, s, "POST", "/command",
 		strings.NewReader(`{"command":"cat input.txt","cwd":"/tmp/workspace/job"}`),
 		map[string]string{"Content-Type": "application/json"})

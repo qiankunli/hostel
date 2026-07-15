@@ -281,10 +281,10 @@ func (f *fakeStore) Stat(_ context.Context, id string) (*store.SnapshotInfo, err
 func (f *fakeStore) Restore(_ context.Context, id, dir string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "data", "workspace"), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "data", "restored.txt"), f.snaps[id], 0o644)
+	return os.WriteFile(filepath.Join(dir, "data", "workspace", "restored.txt"), f.snaps[id], 0o644)
 }
 func (f *fakeStore) Persist(_ context.Context, id, dir string, generation int64) error {
 	f.mu.Lock()
@@ -292,8 +292,8 @@ func (f *fakeStore) Persist(_ context.Context, id, dir string, generation int64)
 	if f.fail {
 		return errors.New("fake persist failure")
 	}
-	// dir is the bed dir: meta.json + data/. Mimic that shape.
-	data, _ := os.ReadFile(filepath.Join(dir, "data", "data.txt"))
+	// dir is the bed dir: meta.json + data/workspace/. Mimic that shape.
+	data, _ := os.ReadFile(filepath.Join(dir, "data", "workspace", "data.txt"))
 	f.snaps[id] = data
 	f.gens[id] = generation
 	return nil
@@ -823,8 +823,12 @@ func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 
 	b, _ := m.Resolve("default")
-	// Layout: {root}/default/{meta.json,data}; Workspace points at data.
-	if b.Workspace != filepath.Join(root, "default", "data") {
+	// Layout: {root}/default/{meta.json,data/workspace}; Root is the private
+	// root (data), Workspace the real subdir below it.
+	if b.Root != filepath.Join(root, "default", "data") {
+		t.Fatalf("Root = %s", b.Root)
+	}
+	if b.Workspace != filepath.Join(root, "default", "data", "workspace") {
 		t.Fatalf("Workspace = %s", b.Workspace)
 	}
 	if _, err := os.Stat(filepath.Join(b.Dir, "meta.json")); err != nil {

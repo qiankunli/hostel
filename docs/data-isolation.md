@@ -5,9 +5,9 @@
 ## 一、理念
 
 1. **信任模型**：hostel 面向可信 / 半可信代码，多 bed 挤一个进程/容器。在这个模型里，**可读即泄漏**——bed A 读到 bed B 的 workspace，和写坏它一样是隔离失败。数据隔离是多租户成立的底线，比 syscall 加固更优先。
-2. **bed 的全部数据 = 一个目录**：bed 的全部持久数据就是它的 workspace 目录（`bed_home = <workspace-root>/<bedID>/data`）。隔离方案只需回答一个问题：**如何让 bed 的文件视图按当前房型兑现访问边界**。持久化（S3 快照/恢复）建立在同一个目录之上，见 `persistence.md`。
+2. **bed 的全部数据 = 一个目录**：`bed_home = <workspace-root>/<bedID>/data` 是 bed 的**私有根**——客户端视角的 `/`，bed 表现得像独占了整个 pod 文件系统。OpenSandbox workspace 是它下面的真实子目录 `bed_home/workspace`，不是 `bed_home` 的别名。隔离方案只需回答一个问题：**如何让 bed 的文件视图按当前房型兑现访问边界**。持久化（S3 快照/恢复）建立在同一个目录之上，见 `persistence.md`。
 3. **路径映射是三档共同的基础契约，不是高档房型的附加能力**：请求先由 `X-Hostel-Bed` 确定 bed，再把 file API、cwd 等显式路径映射到该 bed 的 `bed_home`；hostel 不靠路径判断请求属于哪个 bed。`dorm / room / suite` 只决定映射后的数据能否被兄弟 bed 看见、访问，不得改变同一个客户端路径落到哪个 bed-local 位置。
-4. **两套进程路径语义应当收敛**：`/workspace` 保留为 OpenSandbox 的规范别名，而其它客户端绝对路径同样应 rebase 到 `bed_home`。底层可以按房型使用宿主真实路径、Landlock/UID 或 mount namespace，但对调用方暴露的路径结果必须一致；不能因为 room/direct 没有 `/workspace` bind，就拒绝本可安全映射到 `bed_home` 的路径。
+4. **两套进程路径语义应当收敛**：客户端的任意绝对路径都按同一条规则 rebase 到 `bed_home` 下（`/workspace/x` 也不例外——它落到真实子目录 `bed_home/workspace/x`），映射是**单射**，回显因此天然对称。底层可以按房型使用宿主真实路径、Landlock/UID 或 mount namespace，但对调用方暴露的路径结果必须一致；不能因为 room/direct 没有 `/workspace` bind，就拒绝本可安全映射到 `bed_home` 的路径。
 
 ## 二、流程（bwrap 模式下启动 bed 内进程）
 
@@ -15,7 +15,7 @@
 
 ```
 /            ← 宿主根，只读（工具链、解释器可用）
-/workspace   ← 只有自己：bind <bed_home> → /workspace（rw）
+/workspace   ← 只有自己：bind <bed_home>/workspace → /workspace（rw）
 /tmp         ← per-process tmpfs（不跨 bed、不落盘）
 /dev /proc   ← 全新挂载
 <workspace-root>  ← tmpfs 遮蔽：兄弟 bed 的目录不可见（不是"不可读"，是"不存在"）
@@ -31,7 +31,7 @@ bwrap --unshare-user --unshare-uts --unshare-ipc \
   --dev /dev --ro-bind /proc /proc --tmpfs /tmp \
   --tmpfs <workspace-root> \            # 遮蔽所有 bed 目录
   --tmpfs /root --tmpfs /home \         # 遮蔽宿主用户数据（及存在时的 /run/secrets、/var/run/secrets）
-  --bind <bed_home> /workspace \  # 只挂自己，且给规范名
+  --bind <bed_home>/workspace /workspace \  # 只挂自己的 workspace，且给规范名
   --unsetenv <密钥形 env>... \           # 见 §4：宿主凭据不进 bed
   --chdir /workspace --die-with-parent -- <cmd>
 ```
@@ -57,17 +57,18 @@ bed 已由 `X-Hostel-Bed` 选定后，所有房型共用同一套客户端路径
 
 | 客户端路径 | 三档统一映射结果 |
 |---|---|
-| `/workspace/a.txt` | `<bed_home>/a.txt`（OpenSandbox 规范别名） |
+| `/workspace/a.txt` | `<bed_home>/workspace/a.txt`（workspace 是真实子目录） |
 | `/tmp/workspace/job` | `<bed_home>/tmp/workspace/job` |
-| `tmp/workspace/job` | `<bed_home>/tmp/workspace/job` |
+| `tmp/workspace/job` | `<bed_home>/workspace/tmp/workspace/job`（相对路径 = workspace 相对，SDK 契约） |
+| `/` | `<bed_home>`（客户端的 `/` 就是私有根） |
 
-注意映射是多对一、回显是单一规范形式：`ToClient` 一律以 `/workspace/...` 报告路径，客户端上传 `/tmp/workspace/job/a.txt` 后 info/list 返回的是 `/workspace/tmp/workspace/job/a.txt`——SDK 不应拿服务端回显路径与自己发送的字符串做等值比较。
+客户端的 `/` 即 `bed_home`，绝对路径的映射是**单射**、回显**对称**：上传 `/tmp/workspace/job/a.txt`，info/list 原样报告 `/tmp/workspace/job/a.txt`；上传 `/workspace/x`，报告 `/workspace/x`。不存在"同一文件两个客户端名字"，SDK 可以放心拿回显路径与发送路径做等值比较。
 
 映射必须先做规范化并拒绝 `..`、symlink 等任何实际逃出 `bed_home` 的路径。房型只影响映射结果周围的墙：dorm 没有跨 bed 访问屏障，room 让兄弟访问报 EACCES，suite 进一步让兄弟路径不可见；不能让同一个输入在不同房型落到不同数据目录。
 
 `/workspace` 的规范挂载是 suite 实现这份契约的一种**进程视图机制**，不是路径映射本身：
 
-- suite 把 `bed_home` bind 到 `/workspace`，shell 与 file API 可直接使用同名路径；
+- suite 把 `bed_home/workspace` bind 到 `/workspace`，shell 与 file API 在 workspace 内可直接使用同名路径；私有根的其余部分（如 `bed_home/tmp`）在 suite 进程视图里**没有名字**——cwd 指向 workspace 外时诚实拒绝，不猜；
 - direct/room 即使暂时使用宿主真实路径执行 `cd`，file API、cwd 等北向显式路径仍必须先映射到同一个 `bed_home`；
 - `capabilities.workspace_mount` 只表示是否存在 `/workspace` 真实挂载，不表示是否支持 bed-local 路径映射——后者是三档必备能力，不应作为可选 capability。
 
@@ -77,7 +78,7 @@ bed 已由 `X-Hostel-Bed` 选定后，所有房型共用同一套客户端路径
 
 已支持：`--workspace-root` flag / `HOSTEL_WORKSPACE_ROOT` env（默认 `/workspace`）。参考 execd 的配置惯例：execd 走 `EXECD_ISOLATION_CONFIG` env → TOML 文件（`upper_root` 等）；hostel 当前配置项少，维持"每项一个 `HOSTEL_*` env"的直接形式，配置膨胀后再学 execd 收敛为单一 config 文件。
 
-注意 workspace-root 与规范挂载点重名时（宿主 `/workspace` 作 root、bed 内也叫 `/workspace`）bwrap 序列依然成立：先 tmpfs 盖 `/workspace`，再 bind `<bed_home>` → `/workspace`，自身目录作为挂载点被替换、兄弟目录被 tmpfs 吞掉。
+注意 workspace-root 与规范挂载点重名时（宿主 `/workspace` 作 root、bed 内也叫 `/workspace`）bwrap 序列依然成立：先 tmpfs 盖 `/workspace`，再 bind `<bed_home>/workspace` → `/workspace`，自身目录作为挂载点被替换、兄弟目录被 tmpfs 吞掉。
 
 ### 4. 敏感数据遮蔽清单：文件路径 + 环境变量
 
@@ -108,7 +109,7 @@ bed 已由 `X-Hostel-Bed` 选定后，所有房型共用同一套客户端路径
 
 已实现（`internal/isolation/`）：boot 时 bwrap probe（binary + **全形态 smoke**——用真实 argv 起 `true`，namespace/遮蔽/`/workspace` bind 全过一遍；宿主挂载点缺失等问题在 boot 即暴露并诚实降 direct，不再误报 `workspace_mount`）、遮蔽 argv、`/workspace` 规范挂载、cwd 模式感知映射（`web` 层 `resolveCwd`）、env 剥除、capabilities/healthz 报 `workspace_mount`。mac argv 单测绿；**Linux 真机双 bed 验证已通过**（devbox，bwrap 0.8.0 / kernel 5.15：兄弟遮蔽、规范挂载、敏感路径+env 剥除、direct 负面对照全 PASS）。真机验证同时暴露两个 bug 均已修复：宿主缺 `/workspace` 挂载点（probe 改全形态 + boot 时确保挂载点）；shell 死亡 + 未断开客户端导致全 daemon 死锁（Shell 锁职责拆分，见 `internal/bed/shell.go` LOCKING 注释）。
 
-**尚未完全兑现的共同路径契约**：当前 `fsops.Paths.FromClient` 仍只接受相对路径和 `/workspace` 前缀，`/tmp/workspace/...` 会被判为 workspace 外；direct/room 也没有为命令内绝对路径提供 bed-local 投影，daemon 文件操作的 symlink 防逃逸同样需要补齐。三档隔离机制虽已实装，但这部分不能算某一房型的能力差异，后续应在三档共用路径层补齐。
+**共同路径契约的兑现状态**：`fsops.Paths` 已实现私有根模型——任意客户端绝对路径单射落到 `bed_home` 下、回显对称、相对路径 workspace 相对。尚未补齐的部分：命令字面量的 bed-local 投影（约定入口可经 env 注入统一：`HOME`/`TMPDIR` 指进私有根；字面量本身只有 suite 能靠追加 bind 兑现）；daemon 文件操作的 symlink 防逃逸；suite 下 workspace 外的 cwd 没有进程视图（当前诚实拒绝，追加 bind 后可放开）。这些都不算某一房型的能力差异，应在三档共用层或 bwrap argv 层补齐。
 
 ## 隔离分档模型：青年旅社房型（档 / 机制 / 上限 / 请求）
 
