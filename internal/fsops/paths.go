@@ -28,8 +28,8 @@ import (
 // ENOENT bug came exactly from one call site doing its own stitching and
 // picking the wrong space.
 //
-//	client:  what callers say — the VirtualPrefix form (/workspace/x) or a
-//	         workspace-relative path. OpenSandbox SDK contract.
+//	client:  what callers say — the VirtualPrefix form (/workspace/x), another
+//	         absolute path (/tmp/x), or a workspace-relative path.
 //	host:    where it really lives — {workspace-root}/{bed id}/data/x on the
 //	         carrier host. The daemon's own file ops (fsops) work here.
 //	in-bed:  what the bed's processes see — under suite the workspace is
@@ -52,9 +52,11 @@ func NewPaths(root, mountPoint string) Paths {
 // Root is the bed workspace host dir this converter is anchored at.
 func (p Paths) Root() string { return p.root }
 
-// FromClient maps a client path to the host path, rejecting escapes: absolute
-// paths must live under VirtualPrefix, relative paths are workspace-relative,
-// ".." is neutralized. A bed can never name a host path outside its workspace.
+// FromClient maps every client path into this bed's workspace. VirtualPrefix is
+// the OpenSandbox canonical alias for the workspace root; other absolute paths
+// are rooted below the workspace, just like relative paths. Bed selection has
+// already happened before this conversion, so isolation level must not change
+// the mapping result.
 func (p Paths) FromClient(cp string) (string, error) {
 	if cp == "" {
 		return "", fmt.Errorf("fsops: empty path")
@@ -70,7 +72,7 @@ func (p Paths) FromClient(cp string) (string, error) {
 		case strings.HasPrefix(cp, VirtualPrefix+"/"):
 			rel = strings.TrimPrefix(cp, VirtualPrefix+"/")
 		default:
-			return "", fmt.Errorf("fsops: %q is outside the bed workspace (%s)", cp, VirtualPrefix)
+			rel = strings.TrimPrefix(cp, "/")
 		}
 	}
 	// Normalize under a fake root to neutralize any ".." segments.

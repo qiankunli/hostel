@@ -35,7 +35,7 @@ func TestResolveConfinement(t *testing.T) {
 		{"/workspace/sub/b", false, filepath.Join(root, "sub", "b")},
 		{"/workspace/../../etc/passwd", false, filepath.Join(root, "etc", "passwd")}, // .. neutralized under /workspace
 		{"../escape", false, filepath.Join(root, "escape")},                          // relative .. clamped to root, cannot escape
-		{"/etc/passwd", true, ""},                                                    // absolute outside the virtual prefix
+		{"/etc/passwd", false, filepath.Join(root, "etc", "passwd")},                 // other absolute paths are bed-rooted
 		{"~/secrets", true, ""},
 		{"", true, ""},
 	}

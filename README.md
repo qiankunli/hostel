@@ -65,13 +65,26 @@ curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv
 | Beds | `GET/POST /v1/beds`, `GET/DELETE /v1/beds/:id`, `POST /v1/beds/:id/checkpoint`, `GET /v1/beds/capabilities` |
 | Scheduler | `GET /v1/inventory` — capacity + every local bed (active and luggage) with its persisted generation |
 
-Path semantics: clients address files under the virtual prefix `/workspace`;
-hostel rebases that onto the bed's workspace directory. Relative paths are
-workspace-relative. Absolute paths outside the prefix are rejected — a bed never
-sees the host. Under `bwrap` the workspace is also *really mounted* at
-`/workspace` inside the sandbox, so shell paths and file-API paths are the same
-string; under `direct` (no mount namespace) the shell cwd is the host dir.
-Probe the `workspace_mount` capability to tell the two apart.
+Path semantics: the bed is picked by the `X-Hostel-Bed` header first, then
+every client path (file API `path`, command `cwd`) is rebased into that bed's
+workspace — `/workspace` is the OpenSandbox canonical alias for the workspace
+root, any other absolute path is rooted below it (`/tmp/job` →
+`<workspace>/tmp/job`), and relative paths are workspace-relative. A bed never
+sees the host. Two consequences to be aware of:
+
+- **Paths are echoed back in canonical form**: responses always report
+  `/workspace/...`, so a file uploaded as `/tmp/job/a.txt` is listed as
+  `/workspace/tmp/job/a.txt`. Don't compare server-reported paths against the
+  string you sent — this diverges from execd, where a sandbox owns a whole
+  container and `/tmp/job` means the real `/tmp/job`.
+- **Command text is not rewritten**: an absolute literal inside a shell command
+  (`cat /tmp/job/a.txt`) is resolved by the bed's process view, not by this
+  mapping. Use `cwd` + relative paths to address files written via the file API.
+
+Under `bwrap` the workspace is also *really mounted* at `/workspace` inside the
+sandbox, so shell paths and file-API paths are the same string; under `direct`
+(no mount namespace) the shell cwd is the host dir. Probe the `workspace_mount`
+capability to tell the two apart.
 
 ## Isolation
 

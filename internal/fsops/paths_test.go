@@ -19,6 +19,46 @@ import (
 	"testing"
 )
 
+// TestPathsFromClientAllLevels pins path rebasing as a bed-level contract:
+// room type changes the access barrier, never where a client path is stored.
+func TestPathsFromClientAllLevels(t *testing.T) {
+	root := t.TempDir()
+	levels := []struct {
+		name       string
+		mountPoint string
+	}{
+		{name: "dorm"},
+		{name: "room"},
+		{name: "suite", mountPoint: "/workspace"},
+	}
+	cases := []struct {
+		client string
+		rel    string
+	}{
+		{client: "/workspace"},
+		{client: "/workspace/a.txt", rel: "a.txt"},
+		{client: "/tmp/workspace/job", rel: "tmp/workspace/job"},
+		{client: "tmp/workspace/job", rel: "tmp/workspace/job"},
+		{client: "/"},
+	}
+
+	for _, level := range levels {
+		t.Run(level.name, func(t *testing.T) {
+			paths := NewPaths(root, level.mountPoint)
+			for _, tc := range cases {
+				got, err := paths.FromClient(tc.client)
+				if err != nil {
+					t.Fatalf("FromClient(%q): %v", tc.client, err)
+				}
+				want := filepath.Join(root, filepath.FromSlash(tc.rel))
+				if got != want {
+					t.Errorf("FromClient(%q) = %q, want %q", tc.client, got, want)
+				}
+			}
+		})
+	}
+}
+
 // TestPathsInBed covers the third path space: what the bed's own processes see.
 // With a mount view (suite) host paths are rebased onto the mount point; without
 // one (direct/room) the host path is used as-is. Outside-workspace host paths
