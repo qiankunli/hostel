@@ -61,6 +61,8 @@ bed 已由 `X-Hostel-Bed` 选定后，所有房型共用同一套客户端路径
 | `/tmp/workspace/job` | `<bed_home>/tmp/workspace/job` |
 | `tmp/workspace/job` | `<bed_home>/tmp/workspace/job` |
 
+注意映射是多对一、回显是单一规范形式：`ToClient` 一律以 `/workspace/...` 报告路径，客户端上传 `/tmp/workspace/job/a.txt` 后 info/list 返回的是 `/workspace/tmp/workspace/job/a.txt`——SDK 不应拿服务端回显路径与自己发送的字符串做等值比较。
+
 映射必须先做规范化并拒绝 `..`、symlink 等任何实际逃出 `bed_home` 的路径。房型只影响映射结果周围的墙：dorm 没有跨 bed 访问屏障，room 让兄弟访问报 EACCES，suite 进一步让兄弟路径不可见；不能让同一个输入在不同房型落到不同数据目录。
 
 `/workspace` 的规范挂载是 suite 实现这份契约的一种**进程视图机制**，不是路径映射本身：
