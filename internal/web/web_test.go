@@ -105,6 +105,39 @@ func TestUploadInfoDownloadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAbsolutePathAndCommandCwdShareBedRoot(t *testing.T) {
+	s := newTestServer(t)
+	const clientPath = "/tmp/workspace/job/input.txt"
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("metadata", `{"path":"`+clientPath+`"}`)
+	fw, _ := mw.CreateFormFile("file", "input.txt")
+	_, _ = fw.Write([]byte("bed-local"))
+	_ = mw.Close()
+
+	rec := do(t, s, "POST", "/files/upload", &buf, map[string]string{"Content-Type": mw.FormDataContentType()})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload absolute path = %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(t, s, "POST", "/command",
+		strings.NewReader(`{"command":"cat input.txt","cwd":"/tmp/workspace/job"}`),
+		map[string]string{"Content-Type": "application/json"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("command absolute cwd = %d %s", rec.Code, rec.Body.String())
+	}
+	var output string
+	for _, ev := range parseSSE(t, rec.Body.String()) {
+		if ev.Type == EventStdout {
+			output += ev.Text
+		}
+	}
+	if !strings.Contains(output, "bed-local") {
+		t.Fatalf("command cwd and file API resolved different locations: %q", output)
+	}
+}
+
 // parseSSE extracts the JSON event frames from an SSE body.
 func parseSSE(t *testing.T, body string) []StreamEvent {
 	t.Helper()
@@ -204,15 +237,15 @@ func TestBedIsolationAcrossHeader(t *testing.T) {
 			t.Fatalf("upload bed=%s = %d %s", bedID, rec.Code, rec.Body.String())
 		}
 	}
-	up("alice", "/workspace/secret.txt", "alice-data")
+	up("alice", "/tmp/workspace/secret.txt", "alice-data")
 
 	// bob's bed must NOT see alice's file.
-	rec := do(t, s, "GET", "/files/download?path=/workspace/secret.txt", nil, map[string]string{BedHeader: "bob"})
+	rec := do(t, s, "GET", "/files/download?path=/tmp/workspace/secret.txt", nil, map[string]string{BedHeader: "bob"})
 	if rec.Code != 404 {
 		t.Fatalf("bob reading alice's file = %d (want 404)", rec.Code)
 	}
 	// alice still sees her own.
-	rec = do(t, s, "GET", "/files/download?path=/workspace/secret.txt", nil, map[string]string{BedHeader: "alice"})
+	rec = do(t, s, "GET", "/files/download?path=/tmp/workspace/secret.txt", nil, map[string]string{BedHeader: "alice"})
 	if rec.Code != 200 || rec.Body.String() != "alice-data" {
 		t.Fatalf("alice reading own file = %d %q", rec.Code, rec.Body.String())
 	}
