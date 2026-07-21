@@ -34,7 +34,7 @@ import (
 // object is the commit point and carries the generation, so one small PUT
 // makes the whole snapshot visible atomically.
 //
-// The blob space is PER BED (<prefix>/cas/<bedID>/...): no cross-bed dedup,
+// The blob space is PER BED (<prefix>/<bedID>/...): no cross-bed dedup,
 // but GC stays a local diff ("chunks not referenced by the committed index")
 // whose correctness needs only the upstream scheduler's single-writer-per-bed
 // guarantee — never a cross-manifest, cross-instance sweep.
@@ -76,13 +76,17 @@ func newCAS(ctx context.Context, cfg Config) (Store, error) {
 
 func (s *casStore) Name() string { return "s3" }
 
-func (s *casStore) indexKey(bedID string) string {
-	return path.Join(s.prefix, "cas", bedID+".caibx")
+func (s *casStore) bedPrefix(bedID string) string {
+	return path.Join(s.prefix, bedID)
 }
 
-// chunkPrefix ends with "/" so bedID "a" can never match bedID "ab"'s chunks.
+func (s *casStore) indexKey(bedID string) string {
+	return path.Join(s.bedPrefix(bedID), "index.caibx")
+}
+
+// chunkPrefix ends with "/" so listing one bed can never match a sibling.
 func (s *casStore) chunkPrefix(bedID string) string {
-	return path.Join(s.prefix, "cas", bedID) + "/"
+	return path.Join(s.bedPrefix(bedID), "chunks") + "/"
 }
 
 func (s *casStore) Stat(ctx context.Context, bedID string) (*SnapshotInfo, error) {

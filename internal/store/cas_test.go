@@ -150,7 +150,17 @@ func writeTree(t *testing.T, dir string) {
 
 func newTestCAS() (*casStore, *memObj) {
 	obj := newMemObj()
-	return &casStore{obj: obj, prefix: "hostel"}, obj
+	return &casStore{obj: obj, prefix: "sandbox"}, obj
+}
+
+func TestCASObjectKeysAreBedScoped(t *testing.T) {
+	s, _ := newTestCAS()
+	if got := s.indexKey("bed1"); got != "sandbox/bed1/index.caibx" {
+		t.Fatalf("index key = %q", got)
+	}
+	if got := s.chunkPrefix("bed1"); got != "sandbox/bed1/chunks/" {
+		t.Fatalf("chunk prefix = %q", got)
+	}
 }
 
 func TestCASRoundtrip(t *testing.T) {

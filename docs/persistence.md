@@ -47,7 +47,7 @@ s3 backend 的布局：复用 **desync 库**（casync 的 Go 实现，BSD-3；ca
 
 > 历史：v0.0.1 曾有 `tarball` 布局（一 bed 一 tar.gz，全量重传），cas 验证后移除——只维护一种布局，cas 在传输、no-op、读时校验上全面占优。旧 tarball 快照 cas 不读，无迁移（当时无真实部署）。
 
-**cas 的 blob 空间按 bed 隔离**（`<prefix>/cas/<bedID>/`）：不做跨 bed 去重，换来 GC 只是"提交后删掉 index 不引用的块"的本地 diff——其正确性只依赖上层调度的单写者保证，不需要跨 manifest/跨实例的分布式清扫（restic/kopia 都只能靠显式加锁的离线 prune 解这个问题）。跨 bed 重复的大头（模板/基础工作区）留给将来的共享 base 快照，不靠 blob 级全局去重。GC 失败不算 persist 失败（快照已提交，孤儿块由下次 persist 清扫；崩溃的 persist 留下的孤儿块同理）。
+**cas 的 blob 空间按 bed 隔离**（`<prefix>/<bedID>/`，index 为 `index.caibx`，数据块在 `chunks/`）：不做跨 bed 去重，换来 GC 只是"提交后删掉 index 不引用的块"的本地 diff——其正确性只依赖上层调度的单写者保证，不需要跨 manifest/跨实例的分布式清扫（restic/kopia 都只能靠显式加锁的离线 prune 解这个问题）。跨 bed 重复的大头（模板/基础工作区）留给将来的共享 base 快照，不靠 blob 级全局去重。GC 失败不算 persist 失败（快照已提交，孤儿块由下次 persist 清扫；崩溃的 persist 留下的孤儿块同理）。
 
 ### 4. 一致性：静默后快照
 
