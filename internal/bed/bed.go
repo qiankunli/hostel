@@ -817,6 +817,7 @@ func (m *Manager) RunForegroundTyped(ctx context.Context, b *Bed, command, cwdIn
 		stderrR.Close()
 		return -1, err
 	}
+	start := time.Now()
 	if timeout > 0 {
 		t := time.AfterFunc(timeout, proc.Kill)
 		defer t.Stop()
@@ -835,13 +836,22 @@ func (m *Manager) RunForegroundTyped(ctx context.Context, b *Bed, command, cwdIn
 	read := func(stream OutputStream, file *os.File) {
 		defer wg.Done()
 		defer file.Close()
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			if onLine != nil {
-				onLine(OutputLine{Stream: stream, Text: scanner.Text() + "\n"})
+		// ReadString keeps the child's bytes intact, including whether the final
+		// fragment had a newline. Scanner would strip delimiters and force us to
+		// invent one, making exec results differ from a direct process capture.
+		reader := bufio.NewReader(file)
+		for {
+			text, readErr := reader.ReadString('\n')
+			if text != "" && onLine != nil {
+				onLine(OutputLine{Stream: stream, Text: text})
+			}
+			if readErr != nil {
+				return
 			}
 		}
 	}
+	// Drain both pipes concurrently: reading either one serially can deadlock
+	// once a child fills the other pipe's kernel buffer.
 	wg.Add(2)
 	go read(StreamStdout, stdoutR)
 	go read(StreamStderr, stderrR)
@@ -856,6 +866,7 @@ func (m *Manager) RunForegroundTyped(ctx context.Context, b *Bed, command, cwdIn
 	}()
 	wg.Wait()
 	result := <-waitResultCh
+	b.RecordCommand(time.Since(start))
 	if result.err != nil {
 		return -1, result.err
 	}
