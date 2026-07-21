@@ -112,8 +112,12 @@ func (s *Server) runCommand(c *gin.Context) {
 	// was the "shell: session exited during run" failure on skill batch-sync).
 	sse := newSSE(c)
 	start := time.Now()
-	exitCode, err := s.mgr.RunForeground(c.Request.Context(), b, req.Command, cwdInBed, req.Envs, timeout, func(line string) {
-		sse.send(StreamEvent{Type: EventStdout, Text: line})
+	exitCode, err := s.mgr.RunForegroundTyped(c.Request.Context(), b, req.Command, cwdInBed, req.Envs, timeout, func(line bed.OutputLine) {
+		eventType := EventStdout
+		if line.Stream == bed.StreamStderr {
+			eventType = EventStderr
+		}
+		sse.send(StreamEvent{Type: eventType, Text: line.Text})
 	})
 	if err != nil {
 		log.Printf("hostel exec error: bed=%s cwd=%q err=%v", b.Short(), req.Cwd, err)

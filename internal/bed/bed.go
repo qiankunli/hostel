@@ -164,6 +164,7 @@ func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, amen
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace root %s: %w", root, err)
 	}
+	shellPath = resolveShellPath(shellPath)
 	if st == nil {
 		st = store.Noop{}
 	}
@@ -627,7 +628,7 @@ func (m *Manager) buildCommand(b *Bed, command, cwdInBed string, envs map[string
 	if cwdInBed != "" {
 		command = "cd -- " + shellx.Quote(cwdInBed) + " && { " + command + " ; }"
 	}
-	cmd := exec.Command(m.shellPath, "-c", command)
+	cmd := exec.Command(m.shellPath, shellCommandArgs(m.shellPath, command)...)
 	if err := m.iso.Wrap(cmd, isolation.Workspace{Root: b.Root, Path: b.Workspace}); err != nil {
 		return nil, err
 	}
@@ -770,4 +771,93 @@ func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, cwdInBed s
 		return -1, werr
 	}
 	return code, nil
+}
+
+// OutputStream identifies one side of a typed foreground command stream.
+type OutputStream string
+
+const (
+	StreamStdout OutputStream = "stdout"
+	StreamStderr OutputStream = "stderr"
+)
+
+// OutputLine is one line from a foreground command's stdout or stderr. Unlike
+// RunForeground, this API preserves the two streams end-to-end for HTTP
+// clients that expose exec semantics rather than a terminal transcript.
+type OutputLine struct {
+	Stream OutputStream
+	Text   string
+}
+
+// RunForegroundTyped executes an isolated command while preserving stdout and
+// stderr. Both pipes are drained concurrently so a chatty child cannot block
+// on either stream. The callback may be invoked concurrently for the two
+// streams and must return promptly.
+func (m *Manager) RunForegroundTyped(ctx context.Context, b *Bed, command, cwdInBed string, envs map[string]string, timeout time.Duration, onLine func(OutputLine)) (int, error) {
+	cmd, err := m.buildCommand(b, command, cwdInBed, envs)
+	if err != nil {
+		return -1, err
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		return -1, err
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
+		return -1, err
+	}
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
+	proc, err := m.spawner.Start(b.ID, cmd)
+	stdoutW.Close()
+	stderrW.Close()
+	if err != nil {
+		stdoutR.Close()
+		stderrR.Close()
+		return -1, err
+	}
+	if timeout > 0 {
+		t := time.AfterFunc(timeout, proc.Kill)
+		defer t.Stop()
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			proc.Kill()
+		case <-stop:
+		}
+	}()
+
+	var wg sync.WaitGroup
+	read := func(stream OutputStream, file *os.File) {
+		defer wg.Done()
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			if onLine != nil {
+				onLine(OutputLine{Stream: stream, Text: scanner.Text() + "\n"})
+			}
+		}
+	}
+	wg.Add(2)
+	go read(StreamStdout, stdoutR)
+	go read(StreamStderr, stderrR)
+	type waitResult struct {
+		code int
+		err  error
+	}
+	waitResultCh := make(chan waitResult, 1)
+	go func() {
+		code, waitErr := proc.Wait()
+		waitResultCh <- waitResult{code: code, err: waitErr}
+	}()
+	wg.Wait()
+	result := <-waitResultCh
+	if result.err != nil {
+		return -1, result.err
+	}
+	return result.code, nil
 }

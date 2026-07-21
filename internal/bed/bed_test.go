@@ -38,6 +38,26 @@ func newTestManager(t *testing.T) *Manager {
 	return m
 }
 
+func TestManagerFallsBackToShWhenBashMissing(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewManager(root, "default", filepath.Join(root, "missing-bash"), isolation.New("dorm", root), nil, 0, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if filepath.Base(m.shellPath) != "sh" {
+		t.Fatalf("shellPath=%q, want sh fallback", m.shellPath)
+	}
+	b, err := m.Resolve("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	code, err := m.RunForeground(context.Background(), b, "printf fallback", "", nil, 0, func(line string) { out.WriteString(line) })
+	if err != nil || code != 0 || strings.TrimSpace(out.String()) != "fallback" {
+		t.Fatalf("fallback exec: code=%d err=%v output=%q", code, err, out.String())
+	}
+}
+
 func TestResolveDefaultBedAndValidation(t *testing.T) {
 	m := newTestManager(t)
 
@@ -78,6 +98,27 @@ func TestForegroundShellPersistsState(t *testing.T) {
 	}
 	if res.ExitCode != 0 || !strings.Contains(out.String(), "v=42") {
 		t.Fatalf("state not preserved: exit=%d out=%q", res.ExitCode, out.String())
+	}
+}
+
+// TestBedFileIsolation is a Linux-safe end-to-end check of the bed contract:
+// commands in one bed share a writable filesystem, while another bed cannot
+// observe it (each bed is rooted at its own data directory).
+func TestBedFileIsolation(t *testing.T) {
+	m := newTestManager(t)
+	a, _ := m.Resolve("session-a")
+	b, _ := m.Resolve("session-b")
+	ctx := context.Background()
+	if code, err := m.RunForeground(ctx, a, "printf alpha > shared.txt", "", nil, 0, nil); err != nil || code != 0 {
+		t.Fatalf("write in session-a: code=%d err=%v", code, err)
+	}
+	var out strings.Builder
+	if code, err := m.RunForeground(ctx, a, "cat shared.txt", "", nil, 0, func(s string) { out.WriteString(s) }); err != nil || code != 0 || strings.TrimSpace(out.String()) != "alpha" {
+		t.Fatalf("read back in session-a: code=%d err=%v out=%q", code, err, out.String())
+	}
+	// A missing file is the observable cross-session isolation guarantee.
+	if code, err := m.RunForeground(ctx, b, "test ! -e shared.txt", "", nil, 0, nil); err != nil || code != 0 {
+		t.Fatalf("session-b observed session-a file: code=%d err=%v", code, err)
 	}
 }
 

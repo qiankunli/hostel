@@ -193,6 +193,30 @@ func TestCommandForegroundSSE(t *testing.T) {
 	}
 }
 
+func TestCommandForegroundPreservesStdoutAndStderr(t *testing.T) {
+	s := newTestServer(t)
+	rec := do(t, s, "POST", "/command", strings.NewReader(`{"command":"printf out; printf err >&2; exit 7"}`),
+		map[string]string{"Content-Type": "application/json"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("command = %d %s", rec.Code, rec.Body.String())
+	}
+	var stdout, stderr string
+	var exitCode *int
+	for _, ev := range parseSSE(t, rec.Body.String()) {
+		switch ev.Type {
+		case EventStdout:
+			stdout += ev.Text
+		case EventStderr:
+			stderr += ev.Text
+		case EventComplete:
+			exitCode = ev.ExitCode
+		}
+	}
+	if stdout != "out\n" || stderr != "err\n" || exitCode == nil || *exitCode != 7 {
+		t.Fatalf("typed command output: stdout=%q stderr=%q exit=%v", stdout, stderr, exitCode)
+	}
+}
+
 func TestSessionStatePersistsAcrossRuns(t *testing.T) {
 	s := newTestServer(t)
 	rec := do(t, s, "POST", "/session", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json"})
