@@ -28,7 +28,7 @@ import (
 // ENOENT bug came exactly from one call site doing its own stitching and
 // picking the wrong space.
 //
-//	client:  what callers say. The client's "/" IS the bed's private root —
+//	client:  what callers say. The client's "/" IS the bed_home —
 //	         the bed behaves as if it owned the whole pod filesystem. So
 //	         /workspace/x, /tmp/x and a relative path (workspace-relative,
 //	         OpenSandbox SDK contract) all name places inside one bed, and
@@ -37,12 +37,12 @@ import (
 //	         carrier host. The daemon's own file ops (fsops) work here.
 //	in-bed:  what the bed's processes see — under suite ONLY the workspace
 //	         subdir is mounted (at the canonical mount point); the rest of
-//	         the private root has no in-bed name there. Without a mount view
+//	         bed_home has no in-bed name there. Without a mount view
 //	         (direct/room) it is just the host path.
 //
 // Immutable value; safe to copy.
 type Paths struct {
-	root       string // bed private root host dir ({bed dir}/data) — the bed's "/"
+	home       string // bed_home host dir ({bed dir}/data) — the bed's "/"
 	mountPoint string // in-sandbox canonical mount; "" = no mount view (direct/room)
 }
 
@@ -50,21 +50,21 @@ type Paths struct {
 // root ({bed dir}/data). mountPoint comes from the isolator
 // (Isolator.MountPoint(), "" when the tier gives no mount view).
 func NewPaths(root, mountPoint string) Paths {
-	return Paths{root: root, mountPoint: mountPoint}
+	return Paths{home: root, mountPoint: mountPoint}
 }
 
-// Root is the bed private root host dir this converter is anchored at.
-func (p Paths) Root() string { return p.root }
+// Home is the bed_home host dir this converter is anchored at.
+func (p Paths) Home() string { return p.home }
 
 // WorkspaceHost is the host dir of the bed's workspace: the private-root
 // subdir the client names VirtualPrefix. Derived, not stored — the client
-// namespace IS the private root, so /workspace resolves by the general rule.
+// namespace IS bed_home, so /workspace resolves by the general rule.
 func (p Paths) WorkspaceHost() string {
-	return filepath.Join(p.root, filepath.FromSlash(strings.TrimPrefix(VirtualPrefix, "/")))
+	return filepath.Join(p.home, filepath.FromSlash(strings.TrimPrefix(VirtualPrefix, "/")))
 }
 
 // FromClient maps a client path to the host path. The client's "/" is the
-// bed's private root, so every absolute path lands inside the bed by the same
+// bed_home, so every absolute path lands inside the bed by the same
 // rule (/workspace/x included — no aliasing, echoes stay symmetric); relative
 // paths are workspace-relative per the OpenSandbox SDK contract. Bed selection
 // has already happened before this conversion, so isolation level must not
@@ -82,18 +82,18 @@ func (p Paths) FromClient(cp string) (string, error) {
 	}
 	// Normalize under a fake root to neutralize any ".." segments.
 	clean := path.Clean("/" + strings.TrimPrefix(rel, "/"))
-	full := filepath.Join(p.root, filepath.FromSlash(clean))
-	if r, err := filepath.Rel(p.root, full); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(os.PathSeparator)) {
+	full := filepath.Join(p.home, filepath.FromSlash(clean))
+	if r, err := filepath.Rel(p.home, full); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("fsops: path %q escapes the bed", cp)
 	}
 	return full, nil
 }
 
-// ToClient maps a host path under the private root back to its client form.
+// ToClient maps a host path under bed_home back to its client form.
 // Inverse of FromClient on absolute paths: a file uploaded as /tmp/x is
 // reported as /tmp/x, one uploaded as /workspace/x as /workspace/x.
 func (p Paths) ToClient(host string) string {
-	rel, err := filepath.Rel(p.root, host)
+	rel, err := filepath.Rel(p.home, host)
 	if err != nil || rel == "." {
 		return "/"
 	}
@@ -102,8 +102,8 @@ func (p Paths) ToClient(host string) string {
 
 // InBed maps a host path to the path the bed's own processes must use (e.g. an
 // exec cwd). Without a mount view (direct/room) that is the host path itself —
-// the whole private root is reachable. Under suite only the workspace subdir
-// is mounted (at mountPoint), so host paths elsewhere in the private root have
+// the whole bed_home is reachable. Under suite only the workspace subdir
+// is mounted (at mountPoint), so host paths elsewhere in bed_home have
 // NO in-bed name: refuse rather than guess.
 func (p Paths) InBed(host string) (string, error) {
 	if p.mountPoint == "" {

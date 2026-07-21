@@ -80,7 +80,7 @@ func TestPathsInBed(t *testing.T) {
 				t.Errorf("InBed(%q) = %q,%v want %q", tc.host, got, err, tc.want)
 			}
 		}
-		// The private root outside the workspace has no in-bed name under suite.
+		// bed_home outside the workspace has no in-bed name under suite.
 		for _, host := range []string{root, filepath.Join(root, "tmp", "x"), filepath.Dir(root)} {
 			if _, err := p.InBed(host); err == nil {
 				t.Errorf("InBed(%q) must refuse (not mounted), got nil error", host)
@@ -90,7 +90,7 @@ func TestPathsInBed(t *testing.T) {
 
 	t.Run("no mount view", func(t *testing.T) {
 		p := NewPaths(root, "")
-		host := filepath.Join(root, "tmp", "x") // whole private root reachable
+		host := filepath.Join(root, "tmp", "x") // whole bed_home reachable
 		got, err := p.InBed(host)
 		if err != nil || got != host {
 			t.Errorf("InBed(%q) = %q,%v want the host path back", host, got, err)

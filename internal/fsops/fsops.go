@@ -35,7 +35,7 @@ import (
 // VirtualPrefix is where a bed's workspace appears to clients. This is the
 // OpenSandbox SDK contract — clients hardcode `/workspace/...` — so it is
 // deliberately NOT configurable (unlike the host-side workspace root).
-// The client's "/" is the bed's private root, so this prefix is not an alias:
+// The client's "/" is the bed_home, so this prefix is not an alias:
 // it names the real `workspace` subdir under the root, by the same rule as
 // any other absolute path.
 // Must stay equal to isolation.BwrapMountPoint: that constant is the same
@@ -79,11 +79,11 @@ type Permission struct {
 	Mode  int    `json:"mode"`
 }
 
-// Ops is rooted at one bed's private root: Paths for the path spaces plus the
+// Ops is rooted at one bed_home: Paths for the path spaces plus the
 // actual file operations (which always act on host paths, as the daemon).
 type Ops struct {
 	paths Paths
-	root  string // == paths.Root(); kept as a field for the hot internal uses
+	home  string // == paths.Home(); kept as a field for the hot internal uses
 	// uid/gid of the workspace dir when it differs from the daemon's euid
 	// (uid-isolated beds), else -1. Mechanism-independent invariant: whatever
 	// lands in a bed's workspace belongs to the bed — fsops runs as the
@@ -92,11 +92,11 @@ type Ops struct {
 	uid, gid int
 }
 
-// New returns file ops confined to root (the bed's private root host dir).
+// New returns file ops confined to home (the bed_home host directory).
 // File ops never need the mount view, so the embedded Paths carries no mount
 // point; exec-side callers use the bed's own Paths for that.
 func New(root string) *Ops {
-	o := &Ops{paths: NewPaths(root, ""), root: root, uid: -1, gid: -1}
+	o := &Ops{paths: NewPaths(root, ""), home: root, uid: -1, gid: -1}
 	if fi, err := os.Lstat(root); err == nil {
 		if uid, gid, ok := ownerOf(fi); ok && uid != os.Geteuid() {
 			o.uid, o.gid = uid, gid
@@ -140,7 +140,7 @@ func (o *Ops) mkdirAllOwned(dir string) error {
 	if o.uid < 0 {
 		return nil
 	}
-	for d := dir; strings.HasPrefix(d, o.root); d = filepath.Dir(d) {
+	for d := dir; strings.HasPrefix(d, o.home); d = filepath.Dir(d) {
 		fi, err := os.Lstat(d)
 		if err != nil {
 			break

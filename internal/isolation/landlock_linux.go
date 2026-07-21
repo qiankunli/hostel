@@ -119,12 +119,12 @@ func (l *landlock) Available() bool    { return true } // only constructed when 
 func (l *landlock) MountPoint() string { return "" }   // no remount; real host paths
 
 func (l *landlock) Wrap(cmd *exec.Cmd, ws Workspace) error {
-	// Prefix `hostel __confine <bed private root> --` before the user command,
+	// Prefix `hostel __confine <bed_home> --` before the user command,
 	// so the confiner child applies Landlock then execs it. Confine to Root
-	// (not the workspace subdir): client paths like /tmp/x rebase below Root
+	// (not the workspace subdir): client paths like /tmp/x rebase below bed_home
 	// and must stay writable. cmd.Dir gives the shell its starting cwd — the
 	// workspace subdir (real host path, since there's no /workspace remount).
-	prefix := []string{l.self, ConfineArg, ws.Root, "--"}
+	prefix := []string{l.self, ConfineArg, ws.Home, "--"}
 	userArgs := cmd.Args
 	cmd.Args = make([]string, 0, len(prefix)+len(userArgs))
 	cmd.Args = append(cmd.Args, prefix...)

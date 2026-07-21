@@ -67,9 +67,9 @@ curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv
 
 Path semantics: the bed is picked by the `X-Hostel-Bed` header first; after
 that the bed behaves as if it owned the whole filesystem. The client's `/` is
-the bed's private root, so every absolute path lands inside the bed by one
-rule (`/tmp/job` → `<bed root>/tmp/job`, `/workspace/a` →
-`<bed root>/workspace/a` — `/workspace` is a real subdir, not an alias), and
+the bed_home, so every absolute path lands inside the bed by one
+rule (`/tmp/job` → `<bed_home>/tmp/job`, `/workspace/a` →
+`<bed_home>/workspace/a` — `/workspace` is a real subdir, not an alias), and
 relative paths are workspace-relative per the OpenSandbox SDK contract. The
 mapping is one-to-one: responses echo paths exactly as you sent them. A bed
 never sees the host. One consequence to be aware of:

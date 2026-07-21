@@ -61,10 +61,10 @@ type Bed struct {
 	// Dir is the bed's dir: meta.json + data/ (docs/persistence.md §4).
 	// Snapshots pack this dir; bed code never sees it.
 	Dir string
-	// Root is Dir/data — the bed's private root: the client's "/" and all the
+	// Home is Dir/data — the bed_home: the client's "/" and all the
 	// bed may touch. Everything a client path names lands below it.
-	Root string
-	// Workspace is Root/workspace — the OpenSandbox workspace: canonical
+	Home string
+	// Workspace is Home/workspace — the OpenSandbox workspace: canonical
 	// /workspace bind source under suite, default cwd, browser artifact home.
 	Workspace string
 	CreatedAt time.Time // survives evict/resume via snapshot meta
@@ -265,11 +265,11 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if err := os.MkdirAll(wsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace %s: %w", wsDir, err)
 	}
-	// Let the isolator prepare the freshly (re)created private root — uid
+	// Let the isolator prepare the freshly (re)created bed_home — uid
 	// isolation chowns it to the bed's dedicated uid; other mechanisms no-op.
 	// Must run after any restore repopulated the tree, before the bed serves.
 	if p, ok := m.iso.(isolation.Preparer); ok {
-		if err := p.Prepare(isolation.Workspace{Root: dataDir, Path: wsDir}); err != nil {
+		if err := p.Prepare(isolation.Workspace{Home: dataDir, Path: wsDir}); err != nil {
 			return nil, fmt.Errorf("bed: prepare workspace %s: %w", id, err)
 		}
 	}
@@ -297,7 +297,7 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if restored {
 		profile.LastRestoreMs = restoreMs
 	}
-	b := &Bed{ID: id, Dir: bedDir, Root: dataDir, Workspace: wsDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell),
+	b := &Bed{ID: id, Dir: bedDir, Home: dataDir, Workspace: wsDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell),
 		paths: fsops.NewPaths(dataDir, m.iso.MountPoint())}
 	m.beds[id] = b
 	// The one place the full id is logged: everything downstream logs Short(),
@@ -544,7 +544,7 @@ func (m *Manager) CollectIdle(timeout time.Duration) []string {
 // by the caller via fsops).
 func (m *Manager) CreateShell(b *Bed, cwdInBed string) (string, error) {
 	b.touch()
-	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Root: b.Root, Path: b.Workspace}, cwdInBed)
+	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Home: b.Home, Path: b.Workspace}, cwdInBed)
 	if err != nil {
 		return "", err
 	}
@@ -573,7 +573,7 @@ func (m *Manager) ForegroundShell(b *Bed) (*Shell, error) {
 	}
 	b.mu.Unlock()
 
-	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Root: b.Root, Path: b.Workspace}, "")
+	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Home: b.Home, Path: b.Workspace}, "")
 	if err != nil {
 		return nil, err
 	}
@@ -629,7 +629,7 @@ func (m *Manager) buildCommand(b *Bed, command, cwdInBed string, envs map[string
 		command = "cd -- " + shellx.Quote(cwdInBed) + " && { " + command + " ; }"
 	}
 	cmd := exec.Command(m.shellPath, shellCommandArgs(m.shellPath, command)...)
-	if err := m.iso.Wrap(cmd, isolation.Workspace{Root: b.Root, Path: b.Workspace}); err != nil {
+	if err := m.iso.Wrap(cmd, isolation.Workspace{Home: b.Home, Path: b.Workspace}); err != nil {
 		return nil, err
 	}
 	// The OUTER process cwd must exist on the host; the bed's own workspace

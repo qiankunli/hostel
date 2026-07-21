@@ -73,12 +73,12 @@ func parseRequest(s string) Level {
 // Workspace is what a bed's commands are confined to and rooted at. Two
 // anchors because confinement and the canonical mount cover different scopes:
 type Workspace struct {
-	// Root is the bed's private root on the host ({bed dir}/data) — everything
+	// Home is the bed_home on the host ({bed dir}/data) — everything
 	// the bed may touch. Confinement mechanisms anchor here (landlock rules,
 	// uid chown), so client paths outside /workspace (e.g. /tmp/x, rebased
-	// below Root by fsops) stay writable in room.
-	Root string
-	// Path is the workspace subdir (Root/workspace): the bind source for the
+	// below Home by fsops) stay writable in room.
+	Home string
+	// Path is the workspace subdir (Home/workspace): the bind source for the
 	// canonical /workspace mount under suite, and the default cwd everywhere.
 	Path string
 }
