@@ -212,7 +212,7 @@ func TestCommandForegroundPreservesStdoutAndStderr(t *testing.T) {
 			exitCode = ev.ExitCode
 		}
 	}
-	if stdout != "out\n" || stderr != "err\n" || exitCode == nil || *exitCode != 7 {
+	if stdout != "out" || stderr != "err" || exitCode == nil || *exitCode != 7 {
 		t.Fatalf("typed command output: stdout=%q stderr=%q exit=%v", stdout, stderr, exitCode)
 	}
 }
