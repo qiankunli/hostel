@@ -116,14 +116,17 @@ func writeTree(t *testing.T, dir string) {
 	big := make([]byte, 3<<20) // spans several chunks at 64K/256K/1M
 	rnd.Read(big)
 	files := map[string][]byte{
-		"meta.json":       []byte(`{"generation":1}`),
-		"skip.local":      []byte("host private"),
-		"data/big.bin":    big,
-		"data/src/a.go":   []byte("package a\n"),
-		"data/src/b/b.go": []byte("package b\n"),
-		"data/.hidden":    []byte("dot"),
-		"data/note.local": []byte("NOT top-level, must be kept"),
-		"data/exec.sh":    []byte("#!/bin/sh\necho hi\n"),
+		"meta.json":                   []byte(`{"generation":1}`),
+		"skip.local":                  []byte("host private"),
+		"data/big.bin":                big,
+		"data/src/a.go":               []byte("package a\n"),
+		"data/src/b/b.go":             []byte("package b\n"),
+		"data/.hidden":                []byte("dot"),
+		"data/note.local":             []byte("NOT top-level, must be kept"),
+		"data/exec.sh":                []byte("#!/bin/sh\necho hi\n"),
+		"data/tmp/discard.txt":        []byte("temporary"),
+		"data/tmp/nested/discard.txt": []byte("temporary nested"),
+		"data/tmpfile":                []byte("not the tmp subtree"),
 	}
 	for p, content := range files {
 		full := filepath.Join(dir, filepath.FromSlash(p))
@@ -171,7 +174,7 @@ func TestCASRoundtrip(t *testing.T) {
 	if err := s.Restore(ctx, "bed1", dst); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	for _, p := range []string{"meta.json", "data/big.bin", "data/src/b/b.go", "data/.hidden", "data/note.local"} {
+	for _, p := range []string{"meta.json", "data/big.bin", "data/src/b/b.go", "data/.hidden", "data/note.local", "data/tmpfile"} {
 		want, err := os.ReadFile(filepath.Join(src, filepath.FromSlash(p)))
 		if err != nil {
 			t.Fatal(err)
@@ -186,6 +189,9 @@ func TestCASRoundtrip(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(dst, "skip.local")); !os.IsNotExist(err) {
 		t.Fatalf("top-level *.local leaked into snapshot: err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "data/tmp")); !os.IsNotExist(err) {
+		t.Fatalf("data/tmp subtree leaked into snapshot: err=%v", err)
 	}
 	if target, err := os.Readlink(filepath.Join(dst, "data/link")); err != nil || target != "src/a.go" {
 		t.Fatalf("symlink = %q, %v; want src/a.go", target, err)
@@ -260,7 +266,7 @@ func TestCASIncrementalAndGC(t *testing.T) {
 	}
 }
 
-func TestCASNoopShortCircuit(t *testing.T) {
+func TestCASUnchangedContentUpdatesGeneration(t *testing.T) {
 	ctx := context.Background()
 	s, obj := newTestCAS()
 	src := t.TempDir()
@@ -270,16 +276,27 @@ func TestCASNoopShortCircuit(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := obj.puts
-	// Same content, higher generation: nothing must be uploaded, and the
-	// remote snapshot keeps its (still valid) old generation.
+	beforeIndex, err := s.loadIndex(ctx, "bed1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same content, higher generation: chunks stay untouched, but the index
+	// is committed once so remote freshness follows the new generation.
 	if err := s.Persist(ctx, "bed1", src, 2); err != nil {
 		t.Fatal(err)
 	}
-	if obj.puts != before {
-		t.Fatalf("no-op persist made %d puts", obj.puts-before)
+	if delta := obj.puts - before; delta != 1 {
+		t.Fatalf("unchanged persist made %d puts, want index only", delta)
 	}
-	if info, _ := s.Stat(ctx, "bed1"); info.Generation != 1 {
-		t.Fatalf("generation = %d, want untouched 1", info.Generation)
+	afterIndex, err := s.loadIndex(ctx, "bed1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameChunks(beforeIndex, afterIndex) {
+		t.Fatal("unchanged persist changed content chunks")
+	}
+	if info, _ := s.Stat(ctx, "bed1"); info.Generation != 2 {
+		t.Fatalf("generation = %d, want 2", info.Generation)
 	}
 }
 
