@@ -17,6 +17,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,7 @@ type StreamEvent struct {
 type sseStream struct {
 	c       *gin.Context
 	started bool
+	mu      sync.Mutex
 }
 
 func newSSE(c *gin.Context) *sseStream { return &sseStream{c: c} }
@@ -74,6 +76,8 @@ func (s *sseStream) setup() {
 
 // send writes one event as `<json>\n\n` and flushes.
 func (s *sseStream) send(ev StreamEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.setup()
 	if ev.Timestamp == 0 {
 		ev.Timestamp = time.Now().UnixMilli()

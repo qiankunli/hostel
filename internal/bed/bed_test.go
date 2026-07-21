@@ -38,6 +38,26 @@ func newTestManager(t *testing.T) *Manager {
 	return m
 }
 
+func TestManagerFallsBackToShWhenBashMissing(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewManager(root, "default", filepath.Join(root, "missing-bash"), isolation.New("dorm", root), nil, 0, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if filepath.Base(m.shellPath) != "sh" {
+		t.Fatalf("shellPath=%q, want sh fallback", m.shellPath)
+	}
+	b, err := m.Resolve("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	code, err := m.RunForeground(context.Background(), b, "printf fallback", "", nil, 0, func(line string) { out.WriteString(line) })
+	if err != nil || code != 0 || strings.TrimSpace(out.String()) != "fallback" {
+		t.Fatalf("fallback exec: code=%d err=%v output=%q", code, err, out.String())
+	}
+}
+
 func TestResolveDefaultBedAndValidation(t *testing.T) {
 	m := newTestManager(t)
 
@@ -78,6 +98,27 @@ func TestForegroundShellPersistsState(t *testing.T) {
 	}
 	if res.ExitCode != 0 || !strings.Contains(out.String(), "v=42") {
 		t.Fatalf("state not preserved: exit=%d out=%q", res.ExitCode, out.String())
+	}
+}
+
+// TestBedFileIsolation is a Linux-safe end-to-end check of the bed contract:
+// commands in one bed share a writable filesystem, while another bed cannot
+// observe it (each bed is rooted at its own data directory).
+func TestBedFileIsolation(t *testing.T) {
+	m := newTestManager(t)
+	a, _ := m.Resolve("session-a")
+	b, _ := m.Resolve("session-b")
+	ctx := context.Background()
+	if code, err := m.RunForeground(ctx, a, "printf alpha > shared.txt", "", nil, 0, nil); err != nil || code != 0 {
+		t.Fatalf("write in session-a: code=%d err=%v", code, err)
+	}
+	var out strings.Builder
+	if code, err := m.RunForeground(ctx, a, "cat shared.txt", "", nil, 0, func(s string) { out.WriteString(s) }); err != nil || code != 0 || strings.TrimSpace(out.String()) != "alpha" {
+		t.Fatalf("read back in session-a: code=%d err=%v out=%q", code, err, out.String())
+	}
+	// A missing file is the observable cross-session isolation guarantee.
+	if code, err := m.RunForeground(ctx, b, "test ! -e shared.txt", "", nil, 0, nil); err != nil || code != 0 {
+		t.Fatalf("session-b observed session-a file: code=%d err=%v", code, err)
 	}
 }
 
@@ -281,10 +322,10 @@ func (f *fakeStore) Stat(_ context.Context, id string) (*store.SnapshotInfo, err
 func (f *fakeStore) Restore(_ context.Context, id, dir string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "data", "workspace"), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "data", "restored.txt"), f.snaps[id], 0o644)
+	return os.WriteFile(filepath.Join(dir, "data", "workspace", "restored.txt"), f.snaps[id], 0o644)
 }
 func (f *fakeStore) Persist(_ context.Context, id, dir string, generation int64) error {
 	f.mu.Lock()
@@ -292,8 +333,8 @@ func (f *fakeStore) Persist(_ context.Context, id, dir string, generation int64)
 	if f.fail {
 		return errors.New("fake persist failure")
 	}
-	// dir is the bed dir: meta.json + data/. Mimic that shape.
-	data, _ := os.ReadFile(filepath.Join(dir, "data", "data.txt"))
+	// dir is the bed dir: meta.json + data/workspace/. Mimic that shape.
+	data, _ := os.ReadFile(filepath.Join(dir, "data", "workspace", "data.txt"))
 	f.snaps[id] = data
 	f.gens[id] = generation
 	return nil
@@ -823,8 +864,12 @@ func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 
 	b, _ := m.Resolve("default")
-	// Layout: {root}/default/{meta.json,data}; Workspace points at data.
-	if b.Workspace != filepath.Join(root, "default", "data") {
+	// Layout: {root}/default/{meta.json,data/workspace}; Root is the private
+	// root (data), Workspace the real subdir below it.
+	if b.Root != filepath.Join(root, "default", "data") {
+		t.Fatalf("Root = %s", b.Root)
+	}
+	if b.Workspace != filepath.Join(root, "default", "data", "workspace") {
 		t.Fatalf("Workspace = %s", b.Workspace)
 	}
 	if _, err := os.Stat(filepath.Join(b.Dir, "meta.json")); err != nil {

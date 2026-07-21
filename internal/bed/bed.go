@@ -58,11 +58,14 @@ func ShortID(id string) string {
 // Bed is one isolation unit.
 type Bed struct {
 	ID string
-	// Dir is the bed's root: meta.json + data/ (docs/persistence.md §4).
+	// Dir is the bed's dir: meta.json + data/ (docs/persistence.md §4).
 	// Snapshots pack this dir; bed code never sees it.
 	Dir string
-	// Workspace is Dir/data — the only part bound into the sandbox and the
-	// only part bed code can touch.
+	// Root is Dir/data — the bed's private root: the client's "/" and all the
+	// bed may touch. Everything a client path names lands below it.
+	Root string
+	// Workspace is Root/workspace — the OpenSandbox workspace: canonical
+	// /workspace bind source under suite, default cwd, browser artifact home.
 	Workspace string
 	CreatedAt time.Time // survives evict/resume via snapshot meta
 
@@ -161,6 +164,7 @@ func NewManager(root, defaultBed, shellPath string, iso isolation.Isolator, amen
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("bed: create workspace root %s: %w", root, err)
 	}
+	shellPath = resolveShellPath(shellPath)
 	if st == nil {
 		st = store.Noop{}
 	}
@@ -257,14 +261,15 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 			restored = true
 		}
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("bed: create workspace %s: %w", dataDir, err)
+	wsDir := filepath.Join(dataDir, "workspace")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		return nil, fmt.Errorf("bed: create workspace %s: %w", wsDir, err)
 	}
-	// Let the isolator prepare the freshly (re)created data dir — uid isolation
-	// chowns it to the bed's dedicated uid; other mechanisms no-op. Must run
-	// after any restore repopulated the tree, before the bed serves.
+	// Let the isolator prepare the freshly (re)created private root — uid
+	// isolation chowns it to the bed's dedicated uid; other mechanisms no-op.
+	// Must run after any restore repopulated the tree, before the bed serves.
 	if p, ok := m.iso.(isolation.Preparer); ok {
-		if err := p.Prepare(isolation.Workspace{Path: dataDir}); err != nil {
+		if err := p.Prepare(isolation.Workspace{Root: dataDir, Path: wsDir}); err != nil {
 			return nil, fmt.Errorf("bed: prepare workspace %s: %w", id, err)
 		}
 	}
@@ -292,7 +297,7 @@ func (m *Manager) Resolve(id string) (*Bed, error) {
 	if restored {
 		profile.LastRestoreMs = restoreMs
 	}
-	b := &Bed{ID: id, Dir: bedDir, Workspace: dataDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell),
+	b := &Bed{ID: id, Dir: bedDir, Root: dataDir, Workspace: wsDir, CreatedAt: meta.CreatedAt, lastUsed: now, persistedAt: persistedAt, profile: profile, shells: make(map[string]*Shell),
 		paths: fsops.NewPaths(dataDir, m.iso.MountPoint())}
 	m.beds[id] = b
 	// The one place the full id is logged: everything downstream logs Short(),
@@ -539,7 +544,7 @@ func (m *Manager) CollectIdle(timeout time.Duration) []string {
 // by the caller via fsops).
 func (m *Manager) CreateShell(b *Bed, cwdInBed string) (string, error) {
 	b.touch()
-	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Path: b.Workspace}, cwdInBed)
+	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Root: b.Root, Path: b.Workspace}, cwdInBed)
 	if err != nil {
 		return "", err
 	}
@@ -568,7 +573,7 @@ func (m *Manager) ForegroundShell(b *Bed) (*Shell, error) {
 	}
 	b.mu.Unlock()
 
-	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Path: b.Workspace}, "")
+	sh, err := startShell(m.spawner, b.ID, m.shellPath, m.bedEnv(b.ID), m.iso, isolation.Workspace{Root: b.Root, Path: b.Workspace}, "")
 	if err != nil {
 		return nil, err
 	}
@@ -623,8 +628,8 @@ func (m *Manager) buildCommand(b *Bed, command, cwdInBed string, envs map[string
 	if cwdInBed != "" {
 		command = "cd -- " + shellx.Quote(cwdInBed) + " && { " + command + " ; }"
 	}
-	cmd := exec.Command(m.shellPath, "-c", command)
-	if err := m.iso.Wrap(cmd, isolation.Workspace{Path: b.Workspace}); err != nil {
+	cmd := exec.Command(m.shellPath, shellCommandArgs(m.shellPath, command)...)
+	if err := m.iso.Wrap(cmd, isolation.Workspace{Root: b.Root, Path: b.Workspace}); err != nil {
 		return nil, err
 	}
 	// The OUTER process cwd must exist on the host; the bed's own workspace
@@ -766,4 +771,93 @@ func (m *Manager) RunForeground(ctx context.Context, b *Bed, command, cwdInBed s
 		return -1, werr
 	}
 	return code, nil
+}
+
+// OutputStream identifies one side of a typed foreground command stream.
+type OutputStream string
+
+const (
+	StreamStdout OutputStream = "stdout"
+	StreamStderr OutputStream = "stderr"
+)
+
+// OutputLine is one line from a foreground command's stdout or stderr. Unlike
+// RunForeground, this API preserves the two streams end-to-end for HTTP
+// clients that expose exec semantics rather than a terminal transcript.
+type OutputLine struct {
+	Stream OutputStream
+	Text   string
+}
+
+// RunForegroundTyped executes an isolated command while preserving stdout and
+// stderr. Both pipes are drained concurrently so a chatty child cannot block
+// on either stream. The callback may be invoked concurrently for the two
+// streams and must return promptly.
+func (m *Manager) RunForegroundTyped(ctx context.Context, b *Bed, command, cwdInBed string, envs map[string]string, timeout time.Duration, onLine func(OutputLine)) (int, error) {
+	cmd, err := m.buildCommand(b, command, cwdInBed, envs)
+	if err != nil {
+		return -1, err
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		return -1, err
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
+		return -1, err
+	}
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
+	proc, err := m.spawner.Start(b.ID, cmd)
+	stdoutW.Close()
+	stderrW.Close()
+	if err != nil {
+		stdoutR.Close()
+		stderrR.Close()
+		return -1, err
+	}
+	if timeout > 0 {
+		t := time.AfterFunc(timeout, proc.Kill)
+		defer t.Stop()
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			proc.Kill()
+		case <-stop:
+		}
+	}()
+
+	var wg sync.WaitGroup
+	read := func(stream OutputStream, file *os.File) {
+		defer wg.Done()
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			if onLine != nil {
+				onLine(OutputLine{Stream: stream, Text: scanner.Text() + "\n"})
+			}
+		}
+	}
+	wg.Add(2)
+	go read(StreamStdout, stdoutR)
+	go read(StreamStderr, stderrR)
+	type waitResult struct {
+		code int
+		err  error
+	}
+	waitResultCh := make(chan waitResult, 1)
+	go func() {
+		code, waitErr := proc.Wait()
+		waitResultCh <- waitResult{code: code, err: waitErr}
+	}()
+	wg.Wait()
+	result := <-waitResultCh
+	if result.err != nil {
+		return -1, result.err
+	}
+	return result.code, nil
 }

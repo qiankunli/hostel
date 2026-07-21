@@ -121,6 +121,18 @@ func TestAbsolutePathAndCommandCwdShareBedRoot(t *testing.T) {
 		t.Fatalf("upload absolute path = %d %s", rec.Code, rec.Body.String())
 	}
 
+	// Echo symmetry ("own pod" contract): info reports the path exactly as sent,
+	// not rewritten to a /workspace canonical form.
+	rec = do(t, s, "GET", "/files/info?path="+clientPath, nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("info absolute path = %d %s", rec.Code, rec.Body.String())
+	}
+	var info map[string]map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &info)
+	if info[clientPath]["path"] != clientPath {
+		t.Fatalf("echo asymmetry: sent %q, reported %v", clientPath, info[clientPath]["path"])
+	}
+
 	rec = do(t, s, "POST", "/command",
 		strings.NewReader(`{"command":"cat input.txt","cwd":"/tmp/workspace/job"}`),
 		map[string]string{"Content-Type": "application/json"})
@@ -178,6 +190,30 @@ func TestCommandForegroundSSE(t *testing.T) {
 	}
 	if !sawStdout || !sawComplete {
 		t.Fatalf("SSE missing events: stdout=%v complete=%v (%+v)", sawStdout, sawComplete, evs)
+	}
+}
+
+func TestCommandForegroundPreservesStdoutAndStderr(t *testing.T) {
+	s := newTestServer(t)
+	rec := do(t, s, "POST", "/command", strings.NewReader(`{"command":"printf out; printf err >&2; exit 7"}`),
+		map[string]string{"Content-Type": "application/json"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("command = %d %s", rec.Code, rec.Body.String())
+	}
+	var stdout, stderr string
+	var exitCode *int
+	for _, ev := range parseSSE(t, rec.Body.String()) {
+		switch ev.Type {
+		case EventStdout:
+			stdout += ev.Text
+		case EventStderr:
+			stderr += ev.Text
+		case EventComplete:
+			exitCode = ev.ExitCode
+		}
+	}
+	if stdout != "out\n" || stderr != "err\n" || exitCode == nil || *exitCode != 7 {
+		t.Fatalf("typed command output: stdout=%q stderr=%q exit=%v", stdout, stderr, exitCode)
 	}
 }
 

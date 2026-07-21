@@ -35,14 +35,17 @@ import (
 // VirtualPrefix is where a bed's workspace appears to clients. This is the
 // OpenSandbox SDK contract — clients hardcode `/workspace/...` — so it is
 // deliberately NOT configurable (unlike the host-side workspace root).
+// The client's "/" is the bed's private root, so this prefix is not an alias:
+// it names the real `workspace` subdir under the root, by the same rule as
+// any other absolute path.
 // Must stay equal to isolation.BwrapMountPoint: that constant is the same
 // contract seen from the shell side, and the two packages don't import each
 // other, so nothing but this comment ties them together.
 const VirtualPrefix = "/workspace"
 
 // FileInfo mirrors the OpenSandbox execd file metadata shape so existing SDKs
-// deserialize hostel responses unchanged. Paths are reported back under the
-// virtual prefix.
+// deserialize hostel responses unchanged. Paths are reported back in client
+// form (bed-rooted; symmetric with what the caller sent).
 type FileInfo struct {
 	Path       string    `json:"path,omitempty"`
 	Type       string    `json:"type,omitempty"` // "file" | "directory" | "symlink"
@@ -76,7 +79,7 @@ type Permission struct {
 	Mode  int    `json:"mode"`
 }
 
-// Ops is rooted at one bed's workspace: Paths for the path spaces plus the
+// Ops is rooted at one bed's private root: Paths for the path spaces plus the
 // actual file operations (which always act on host paths, as the daemon).
 type Ops struct {
 	paths Paths
@@ -89,9 +92,9 @@ type Ops struct {
 	uid, gid int
 }
 
-// New returns file ops confined to root (the bed workspace host dir). File ops
-// never need the mount view, so the embedded Paths carries no mount point;
-// exec-side callers use the bed's own Paths for that.
+// New returns file ops confined to root (the bed's private root host dir).
+// File ops never need the mount view, so the embedded Paths carries no mount
+// point; exec-side callers use the bed's own Paths for that.
 func New(root string) *Ops {
 	o := &Ops{paths: NewPaths(root, ""), root: root, uid: -1, gid: -1}
 	if fi, err := os.Lstat(root); err == nil {

@@ -28,35 +28,47 @@ import (
 // ENOENT bug came exactly from one call site doing its own stitching and
 // picking the wrong space.
 //
-//	client:  what callers say — the VirtualPrefix form (/workspace/x), another
-//	         absolute path (/tmp/x), or a workspace-relative path.
+//	client:  what callers say. The client's "/" IS the bed's private root —
+//	         the bed behaves as if it owned the whole pod filesystem. So
+//	         /workspace/x, /tmp/x and a relative path (workspace-relative,
+//	         OpenSandbox SDK contract) all name places inside one bed, and
+//	         the mapping is injective: echoes reproduce the path as sent.
 //	host:    where it really lives — {workspace-root}/{bed id}/data/x on the
 //	         carrier host. The daemon's own file ops (fsops) work here.
-//	in-bed:  what the bed's processes see — under suite the workspace is
-//	         mounted at the canonical mount point, so host paths don't exist
-//	         in the sandbox's mount namespace; without a mount view
+//	in-bed:  what the bed's processes see — under suite ONLY the workspace
+//	         subdir is mounted (at the canonical mount point); the rest of
+//	         the private root has no in-bed name there. Without a mount view
 //	         (direct/room) it is just the host path.
 //
 // Immutable value; safe to copy.
 type Paths struct {
-	root       string // bed workspace host dir ({bed dir}/data)
+	root       string // bed private root host dir ({bed dir}/data) — the bed's "/"
 	mountPoint string // in-sandbox canonical mount; "" = no mount view (direct/room)
 }
 
-// NewPaths builds the converter for one bed. mountPoint comes from the
-// isolator (Isolator.MountPoint(), "" when the tier gives no mount view).
+// NewPaths builds the converter for one bed, anchored at the bed's private
+// root ({bed dir}/data). mountPoint comes from the isolator
+// (Isolator.MountPoint(), "" when the tier gives no mount view).
 func NewPaths(root, mountPoint string) Paths {
 	return Paths{root: root, mountPoint: mountPoint}
 }
 
-// Root is the bed workspace host dir this converter is anchored at.
+// Root is the bed private root host dir this converter is anchored at.
 func (p Paths) Root() string { return p.root }
 
-// FromClient maps every client path into this bed's workspace. VirtualPrefix is
-// the OpenSandbox canonical alias for the workspace root; other absolute paths
-// are rooted below the workspace, just like relative paths. Bed selection has
-// already happened before this conversion, so isolation level must not change
-// the mapping result.
+// WorkspaceHost is the host dir of the bed's workspace: the private-root
+// subdir the client names VirtualPrefix. Derived, not stored — the client
+// namespace IS the private root, so /workspace resolves by the general rule.
+func (p Paths) WorkspaceHost() string {
+	return filepath.Join(p.root, filepath.FromSlash(strings.TrimPrefix(VirtualPrefix, "/")))
+}
+
+// FromClient maps a client path to the host path. The client's "/" is the
+// bed's private root, so every absolute path lands inside the bed by the same
+// rule (/workspace/x included — no aliasing, echoes stay symmetric); relative
+// paths are workspace-relative per the OpenSandbox SDK contract. Bed selection
+// has already happened before this conversion, so isolation level must not
+// change the mapping result.
 func (p Paths) FromClient(cp string) (string, error) {
 	if cp == "" {
 		return "", fmt.Errorf("fsops: empty path")
@@ -65,46 +77,41 @@ func (p Paths) FromClient(cp string) (string, error) {
 		return "", fmt.Errorf("fsops: %q: home-relative paths are not supported", cp)
 	}
 	rel := cp
-	if path.IsAbs(cp) {
-		switch {
-		case cp == VirtualPrefix:
-			rel = "."
-		case strings.HasPrefix(cp, VirtualPrefix+"/"):
-			rel = strings.TrimPrefix(cp, VirtualPrefix+"/")
-		default:
-			rel = strings.TrimPrefix(cp, "/")
-		}
+	if !path.IsAbs(cp) {
+		rel = path.Join(VirtualPrefix, cp) // workspace-relative
 	}
 	// Normalize under a fake root to neutralize any ".." segments.
-	clean := path.Clean("/" + rel)
+	clean := path.Clean("/" + strings.TrimPrefix(rel, "/"))
 	full := filepath.Join(p.root, filepath.FromSlash(clean))
 	if r, err := filepath.Rel(p.root, full); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("fsops: path %q escapes workspace", cp)
+		return "", fmt.Errorf("fsops: path %q escapes the bed", cp)
 	}
 	return full, nil
 }
 
-// ToClient maps a host path under the workspace back to its VirtualPrefix form
-// (how it is reported to callers).
+// ToClient maps a host path under the private root back to its client form.
+// Inverse of FromClient on absolute paths: a file uploaded as /tmp/x is
+// reported as /tmp/x, one uploaded as /workspace/x as /workspace/x.
 func (p Paths) ToClient(host string) string {
 	rel, err := filepath.Rel(p.root, host)
 	if err != nil || rel == "." {
-		return VirtualPrefix
+		return "/"
 	}
-	return path.Join(VirtualPrefix, filepath.ToSlash(rel))
+	return "/" + filepath.ToSlash(rel)
 }
 
-// InBed maps a host path under the workspace to the path the bed's own
-// processes must use (e.g. an exec cwd): the mount-point form under suite, the
-// host path itself when there is no mount view. Rejects paths outside the
-// workspace rather than guessing.
+// InBed maps a host path to the path the bed's own processes must use (e.g. an
+// exec cwd). Without a mount view (direct/room) that is the host path itself —
+// the whole private root is reachable. Under suite only the workspace subdir
+// is mounted (at mountPoint), so host paths elsewhere in the private root have
+// NO in-bed name: refuse rather than guess.
 func (p Paths) InBed(host string) (string, error) {
 	if p.mountPoint == "" {
 		return host, nil
 	}
-	rel, err := filepath.Rel(p.root, host)
+	rel, err := filepath.Rel(p.WorkspaceHost(), host)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("fsops: host path %q is outside the bed workspace", host)
+		return "", fmt.Errorf("fsops: host path %q is not visible inside the sandbox (only the workspace is mounted at %s)", host, p.mountPoint)
 	}
 	return path.Join(p.mountPoint, filepath.ToSlash(rel)), nil
 }

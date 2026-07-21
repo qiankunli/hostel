@@ -35,10 +35,10 @@ func TestPathsFromClientAllLevels(t *testing.T) {
 		client string
 		rel    string
 	}{
-		{client: "/workspace"},
-		{client: "/workspace/a.txt", rel: "a.txt"},
+		{client: "/workspace", rel: "workspace"},
+		{client: "/workspace/a.txt", rel: "workspace/a.txt"},
 		{client: "/tmp/workspace/job", rel: "tmp/workspace/job"},
-		{client: "tmp/workspace/job", rel: "tmp/workspace/job"},
+		{client: "tmp/workspace/job", rel: "workspace/tmp/workspace/job"}, // relative = workspace-relative
 		{client: "/"},
 	}
 
@@ -60,18 +60,19 @@ func TestPathsFromClientAllLevels(t *testing.T) {
 }
 
 // TestPathsInBed covers the third path space: what the bed's own processes see.
-// With a mount view (suite) host paths are rebased onto the mount point; without
-// one (direct/room) the host path is used as-is. Outside-workspace host paths
-// are refused, never guessed.
+// With a mount view (suite) ONLY the workspace subdir has an in-bed name (the
+// mount point); other private-root paths are refused, never guessed. Without a
+// mount view (direct/room) the host path is used as-is.
 func TestPathsInBed(t *testing.T) {
 	root := t.TempDir()
 
 	t.Run("mounted", func(t *testing.T) {
 		p := NewPaths(root, "/workspace")
+		ws := filepath.Join(root, "workspace")
 		cases := []struct{ host, want string }{
-			{root, "/workspace"},
-			{filepath.Join(root, "sub"), "/workspace/sub"},
-			{filepath.Join(root, "a", "b"), "/workspace/a/b"},
+			{ws, "/workspace"},
+			{filepath.Join(ws, "sub"), "/workspace/sub"},
+			{filepath.Join(ws, "a", "b"), "/workspace/a/b"},
 		}
 		for _, tc := range cases {
 			got, err := p.InBed(tc.host)
@@ -79,14 +80,17 @@ func TestPathsInBed(t *testing.T) {
 				t.Errorf("InBed(%q) = %q,%v want %q", tc.host, got, err, tc.want)
 			}
 		}
-		if _, err := p.InBed(filepath.Dir(root)); err == nil {
-			t.Errorf("InBed(outside) must refuse, got nil error")
+		// The private root outside the workspace has no in-bed name under suite.
+		for _, host := range []string{root, filepath.Join(root, "tmp", "x"), filepath.Dir(root)} {
+			if _, err := p.InBed(host); err == nil {
+				t.Errorf("InBed(%q) must refuse (not mounted), got nil error", host)
+			}
 		}
 	})
 
 	t.Run("no mount view", func(t *testing.T) {
 		p := NewPaths(root, "")
-		host := filepath.Join(root, "sub")
+		host := filepath.Join(root, "tmp", "x") // whole private root reachable
 		got, err := p.InBed(host)
 		if err != nil || got != host {
 			t.Errorf("InBed(%q) = %q,%v want the host path back", host, got, err)
@@ -94,11 +98,13 @@ func TestPathsInBed(t *testing.T) {
 	})
 }
 
-// TestPathsRoundTrip pins FromClient/ToClient as inverses on the client form.
+// TestPathsRoundTrip pins FromClient/ToClient as inverses on absolute client
+// paths — the "own pod" contract: a path is echoed back exactly as sent, for
+// workspace and non-workspace locations alike.
 func TestPathsRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	p := NewPaths(root, "/workspace")
-	for _, cp := range []string{"/workspace", "/workspace/a.txt", "/workspace/x/y"} {
+	for _, cp := range []string{"/", "/workspace", "/workspace/a.txt", "/workspace/x/y", "/tmp/workspace/job", "/etc/hosts"} {
 		host, err := p.FromClient(cp)
 		if err != nil {
 			t.Fatalf("FromClient(%q): %v", cp, err)

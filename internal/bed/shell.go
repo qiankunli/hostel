@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -29,6 +30,28 @@ import (
 
 	"github.com/qiankunli/hostel/internal/isolation"
 )
+
+// resolveShellPath prefers the configured shell but degrades to sh for
+// minimal images where bash is absent. The resolved path is shared by both
+// one-shot commands and stateful sessions so their syntax contract matches.
+func resolveShellPath(configured string) string {
+	if configured != "" {
+		if path, err := exec.LookPath(configured); err == nil {
+			return path
+		}
+	}
+	if path, err := exec.LookPath("sh"); err == nil {
+		return path
+	}
+	return configured
+}
+
+func shellCommandArgs(shellPath, command string) []string {
+	if filepath.Base(shellPath) == "bash" {
+		return []string{"--noprofile", "--norc", "-c", command}
+	}
+	return []string{"-c", command}
+}
 
 var bedIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
@@ -70,7 +93,7 @@ type Shell struct {
 // explicit os.Pipe pairs (not StdinPipe/StdoutPipe) so the raw fds can cross a
 // process boundary when the spawner is the bed's init.
 func startShell(sp Spawner, bedID, shellPath string, env []string, iso isolation.Isolator, ws isolation.Workspace, cwdInBed string) (*Shell, error) {
-	cmd := exec.Command(shellPath, "--noprofile", "--norc")
+	cmd := exec.Command(shellPath, shellInteractiveArgs(shellPath)...)
 	cmd.Env = env
 	if err := iso.Wrap(cmd, ws); err != nil {
 		return nil, err
@@ -124,6 +147,13 @@ func startShell(sp Spawner, bedID, shellPath string, env []string, iso isolation
 	}()
 	go func() { _, _ = proc.Wait() }() // reap; EOF above drives dead state
 	return s, nil
+}
+
+func shellInteractiveArgs(shellPath string) []string {
+	if filepath.Base(shellPath) == "bash" {
+		return []string{"--noprofile", "--norc"}
+	}
+	return nil
 }
 
 // Dead reports whether the shell process has exited.

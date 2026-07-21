@@ -65,18 +65,15 @@ curl -s 'localhost:8872/files/info?path=/workspace/a.txt' -H 'X-Hostel-Bed: conv
 | Beds | `GET/POST /v1/beds`, `GET/DELETE /v1/beds/:id`, `POST /v1/beds/:id/checkpoint`, `GET /v1/beds/capabilities` |
 | Scheduler | `GET /v1/inventory` — capacity + every local bed (active and luggage) with its persisted generation |
 
-Path semantics: the bed is picked by the `X-Hostel-Bed` header first, then
-every client path (file API `path`, command `cwd`) is rebased into that bed's
-workspace — `/workspace` is the OpenSandbox canonical alias for the workspace
-root, any other absolute path is rooted below it (`/tmp/job` →
-`<workspace>/tmp/job`), and relative paths are workspace-relative. A bed never
-sees the host. Two consequences to be aware of:
+Path semantics: the bed is picked by the `X-Hostel-Bed` header first; after
+that the bed behaves as if it owned the whole filesystem. The client's `/` is
+the bed's private root, so every absolute path lands inside the bed by one
+rule (`/tmp/job` → `<bed root>/tmp/job`, `/workspace/a` →
+`<bed root>/workspace/a` — `/workspace` is a real subdir, not an alias), and
+relative paths are workspace-relative per the OpenSandbox SDK contract. The
+mapping is one-to-one: responses echo paths exactly as you sent them. A bed
+never sees the host. One consequence to be aware of:
 
-- **Paths are echoed back in canonical form**: responses always report
-  `/workspace/...`, so a file uploaded as `/tmp/job/a.txt` is listed as
-  `/workspace/tmp/job/a.txt`. Don't compare server-reported paths against the
-  string you sent — this diverges from execd, where a sandbox owns a whole
-  container and `/tmp/job` means the real `/tmp/job`.
 - **Command text is not rewritten**: an absolute literal inside a shell command
   (`cat /tmp/job/a.txt`) is resolved by the bed's process view, not by this
   mapping. Use `cwd` + relative paths to address files written via the file API.
