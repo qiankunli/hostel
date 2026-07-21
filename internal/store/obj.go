@@ -60,7 +60,10 @@ type objAPI interface {
 	// head returns object user metadata and size; exists=false when missing.
 	head(ctx context.Context, key string) (meta map[string]string, size int64, exists bool, err error)
 	get(ctx context.Context, key string) (io.ReadCloser, error)
-	put(ctx context.Context, key string, r io.Reader, size int64, meta map[string]string) error
+	// PutObject may rewind the body for signing, checksums, and retries. Hostel's
+	// chunks and indexes are already bounded in-memory objects, so require that
+	// invariant here instead of weakening S3 integrity for non-seekable streams.
+	put(ctx context.Context, key string, r io.ReadSeeker, size int64, meta map[string]string) error
 	// del removes keys; missing keys are not an error.
 	del(ctx context.Context, keys []string) error
 	// list returns all keys under prefix.
@@ -96,7 +99,7 @@ func (o *s3obj) get(ctx context.Context, key string) (io.ReadCloser, error) {
 	return out.Body, nil
 }
 
-func (o *s3obj) put(ctx context.Context, key string, r io.Reader, size int64, meta map[string]string) error {
+func (o *s3obj) put(ctx context.Context, key string, r io.ReadSeeker, size int64, meta map[string]string) error {
 	_, err := o.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &o.bucket, Key: &key, Body: r, ContentLength: &size, Metadata: meta,
 	})

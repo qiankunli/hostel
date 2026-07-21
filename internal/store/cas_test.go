@@ -67,7 +67,7 @@ func (m *memObj) get(_ context.Context, key string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(append([]byte(nil), b...))), nil
 }
 
-func (m *memObj) put(_ context.Context, key string, r io.Reader, _ int64, meta map[string]string) error {
+func (m *memObj) put(_ context.Context, key string, r io.ReadSeeker, _ int64, meta map[string]string) error {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return err
