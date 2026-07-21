@@ -155,12 +155,12 @@ func (s *casStore) Persist(ctx context.Context, bedID, dir string, generation in
 		return fmt.Errorf("store: persist %s: chunk: %w", bedID, err)
 	}
 
-	// No-op short-circuit: identical content produces an identical catar
-	// (stable walk order) and therefore an identical chunk sequence. Skip the
-	// index write and GC entirely; the remote snapshot stays valid as-is.
-	if prev != nil && sameChunks(idx, *prev) {
-		return nil
-	}
+	// Identical content produces the same chunk sequence, so there are no blob
+	// uploads to perform. The index must still be republished with the new
+	// generation: generation is the cross-carrier luggage freshness token, and
+	// leaving it behind can make a stale local copy compare equal after another
+	// carrier advances the bed. This remains a cheap no-op (one small index PUT).
+	unchanged := prev != nil && sameChunks(idx, *prev)
 
 	var buf bytes.Buffer
 	if _, err := idx.WriteTo(&buf); err != nil {
@@ -174,6 +174,9 @@ func (s *casStore) Persist(ctx context.Context, bedID, dir string, generation in
 	})
 	if err != nil {
 		return fmt.Errorf("store: persist %s: put index: %w", bedID, err)
+	}
+	if unchanged {
+		return nil
 	}
 
 	// GC after the commit point: anything under the bed's chunk prefix that
@@ -331,8 +334,9 @@ func (s *casObjStore) HasChunk(id desync.ChunkID) (bool, error) {
 func (s *casObjStore) Close() error   { return nil }
 func (s *casObjStore) String() string { return "cas:" + s.prefix }
 
-// filteredFS wraps a FilesystemReader and drops top-level *.local entries —
-// the host-private convention (docs/persistence.md §4).
+// filteredFS wraps a FilesystemReader and drops snapshot-private paths:
+// top-level *.local entries belong to the carrier, while bed_home /tmp is
+// explicitly ephemeral and must not follow a bed across carriers.
 type filteredFS struct {
 	inner desync.FilesystemReader
 	root  string
@@ -344,7 +348,7 @@ func (f *filteredFS) Next() (*desync.File, error) {
 		if err != nil || file == nil {
 			return file, err
 		}
-		if f.topLocal(file) {
+		if f.excluded(file) {
 			_ = file.Close()
 			continue
 		}
@@ -352,14 +356,14 @@ func (f *filteredFS) Next() (*desync.File, error) {
 	}
 }
 
-func (f *filteredFS) topLocal(file *desync.File) bool {
-	if !strings.HasSuffix(file.Name, ".local") {
-		return false
-	}
+func (f *filteredFS) excluded(file *desync.File) bool {
 	rel := file.Path
 	if r, err := filepath.Rel(f.root, file.Path); err == nil {
 		rel = r
 	}
 	rel = strings.Trim(filepath.ToSlash(rel), "/")
-	return !strings.Contains(rel, "/")
+	if rel == "data/tmp" || strings.HasPrefix(rel, "data/tmp/") {
+		return true
+	}
+	return !strings.Contains(rel, "/") && strings.HasSuffix(file.Name, ".local")
 }

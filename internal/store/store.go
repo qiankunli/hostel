@@ -61,8 +61,9 @@ type Store interface {
 	// Persist snapshots dir as the bed's durable copy, replacing any previous
 	// snapshot. Called on evict, explicit checkpoint, and the periodic safety
 	// net. dir is the bed dir (portable meta + data/); top-level *.local
-	// files are host-private and excluded. generation is the meta's persist
-	// counter, surfaced back through Stat.
+	// files are host-private and excluded; data/tmp is the bed_home's ephemeral
+	// /tmp and is excluded recursively. generation is the meta's persist counter,
+	// surfaced back through Stat.
 	Persist(ctx context.Context, bedID, dir string, generation int64) error
 	// Delete removes the bed's snapshot — the purge path: after this the bed
 	// identity no longer exists anywhere. Deleting a missing snapshot is not
