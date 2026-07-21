@@ -95,10 +95,11 @@ func main() {
 	// Fail fast on a misconfigured store: booting with silent noop while the
 	// operator believes snapshots are on would be quiet data loss.
 	st, err := store.New(context.Background(), store.Config{
-		Backend:  cfg.StoreBackend,
-		Bucket:   cfg.S3Bucket,
-		Prefix:   cfg.S3Prefix,
-		Endpoint: cfg.S3Endpoint,
+		Backend:   cfg.StoreBackend,
+		Bucket:    cfg.S3Bucket,
+		Prefix:    cfg.S3Prefix,
+		Endpoint:  cfg.S3Endpoint,
+		PathStyle: cfg.S3PathStyle,
 	})
 	if err != nil {
 		log.Fatalf("hostel: init store: %v", err)

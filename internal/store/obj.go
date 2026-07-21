@@ -44,10 +44,11 @@ func newS3Client(ctx context.Context, cfg Config) (*s3.Client, error) {
 	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = &cfg.Endpoint
-			// S3-compatible stores (MinIO/TOS/Ceph) generally want
-			// path-style addressing rather than virtual-hosted buckets.
-			o.UsePathStyle = true
 		}
+		// TOS only supports virtual-hosted buckets, while some MinIO/Ceph
+		// deployments require path-style. Keep the interoperable default and
+		// let deployments opt into path-style explicitly.
+		o.UsePathStyle = cfg.PathStyle
 	}), nil
 }
 

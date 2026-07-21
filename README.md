@@ -138,7 +138,7 @@ reports `amenities: {chromium: idle|running}`.
 Flags (or `HOSTEL_*` env vars): `--addr` / `--workspace-root` / `--isolation` /
 `--default-bed` / `--shell` / `--bed-idle-timeout` / `--max-beds` /
 `--bed-init` / `--store` /
-`--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--persist-interval` /
+`--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--s3-path-style` / `--persist-interval` /
 `--luggage-high-bytes` / `--luggage-low-bytes` /
 `--chromium-path` / `--chromium-cdp-url` / `--chromium-idle-stop`.
 
@@ -159,6 +159,8 @@ snapshot; the local dir is just its working copy.
 `DELETE /v1/beds/:id` evicts (identity kept); add `?purge=true` to also delete
 the snapshot and end the identity. An evict raced by live traffic returns
 `409 BED_BUSY` instead of dropping mid-flight writes.
+Bucket addressing defaults to virtual-hosted style (required by TOS); set
+`--s3-path-style` only for endpoints such as MinIO that require path-style.
 
 Luggage: an evicted bed leaves its local dir behind as a warm cache — resuming
 on the same instance skips the snapshot download (a monotonic generation

@@ -35,7 +35,7 @@ type Store interface {
 }
 ```
 
-backend：`auto`（默认）· `noop`（laptop 零依赖）· `s3`（内容寻址增量，见 §3；`cas` 为别名）。S3 兼容 API 皆可（AWS / MinIO / 火山 TOS / Ceph），配置：`--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint`（creds 走 AWS SDK 标准环境链）/ `--persist-on-idle` / `--persist-interval`。**`auto` 按意图解析**：配了 bucket = 想要持久化 → s3；没配 → noop。这同时封掉"配了 bucket 但忘了 `--store` → 静默不持久化"的误配。
+backend：`auto`（默认）· `noop`（laptop 零依赖）· `s3`（内容寻址增量，见 §3；`cas` 为别名）。S3 兼容 API 皆可（AWS / MinIO / 火山 TOS / Ceph），配置：`--store` / `--s3-bucket` / `--s3-prefix` / `--s3-endpoint` / `--s3-path-style`（默认 virtual-hosted；只在 endpoint 要求时开启；creds 走 AWS SDK 标准环境链）/ `--persist-on-idle` / `--persist-interval`。**`auto` 按意图解析**：配了 bucket = 想要持久化 → s3；没配 → noop。这同时封掉"配了 bucket 但忘了 `--store` → 静默不持久化"的误配。
 
 ### 2. persist 触发：边界同步，不每写必传
 
