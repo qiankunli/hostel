@@ -64,6 +64,7 @@ type Config struct {
 	S3Bucket     string
 	S3Prefix     string
 	S3Endpoint   string // S3-compatible endpoint (MinIO/TOS/Ceph); "" = AWS
+	S3PathStyle  bool   // force path-style bucket addressing (for example MinIO)
 	// PersistInterval is the periodic snapshot safety net (0 = only at
 	// lifecycle boundaries). Bounds how much work a crash can lose.
 	PersistInterval time.Duration
@@ -106,6 +107,7 @@ func Load(args []string) *Config {
 	fs.StringVar(&c.S3Bucket, "s3-bucket", osx.EnvStr("HOSTEL_S3_BUCKET", ""), "S3 bucket for bed snapshots")
 	fs.StringVar(&c.S3Prefix, "s3-prefix", osx.EnvStr("HOSTEL_S3_PREFIX", "hostel"), "key prefix for bed snapshots")
 	fs.StringVar(&c.S3Endpoint, "s3-endpoint", osx.EnvStr("HOSTEL_S3_ENDPOINT", ""), "S3-compatible endpoint (empty = AWS)")
+	fs.BoolVar(&c.S3PathStyle, "s3-path-style", osx.EnvBool("HOSTEL_S3_PATH_STYLE", false), "use path-style S3 bucket addressing (default virtual-hosted style)")
 	persist := fs.Duration("persist-interval", osx.EnvDuration("HOSTEL_PERSIST_INTERVAL", 0), "periodic snapshot interval, 0=lifecycle boundaries only")
 	fs.Int64Var(&c.LuggageHighBytes, "luggage-high-bytes", osx.EnvInt64("HOSTEL_LUGGAGE_HIGH_BYTES", 0), "luggage disk high watermark in bytes, 0=no luggage GC")
 	fs.Int64Var(&c.LuggageLowBytes, "luggage-low-bytes", osx.EnvInt64("HOSTEL_LUGGAGE_LOW_BYTES", 0), "luggage GC target in bytes (default 80% of high)")

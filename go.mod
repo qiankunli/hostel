@@ -91,7 +91,7 @@ require (
 	github.com/pkg/sftp v1.13.5 // indirect
 	github.com/pkg/xattr v0.4.9 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
-	github.com/qiankunli/go-stdx v0.0.2
+	github.com/qiankunli/go-stdx v0.0.3
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/sirupsen/logrus v1.9.1 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect

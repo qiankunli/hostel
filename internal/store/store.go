@@ -73,10 +73,11 @@ type Store interface {
 
 // Config selects and parameterizes the backend (flags/env in config package).
 type Config struct {
-	Backend  string // "auto" (default) | "noop" | "s3" ("cas" accepted as alias)
-	Bucket   string
-	Prefix   string // key prefix inside the bucket, e.g. "hostel/prod"
-	Endpoint string // non-AWS S3-compatible endpoint (MinIO/TOS/Ceph); "" = AWS
+	Backend   string // "auto" (default) | "noop" | "s3" ("cas" accepted as alias)
+	Bucket    string
+	Prefix    string // key prefix inside the bucket, e.g. "hostel/prod"
+	Endpoint  string // non-AWS S3-compatible endpoint (MinIO/TOS/Ceph); "" = AWS
+	PathStyle bool   // force path-style bucket addressing; default is virtual-hosted style
 }
 
 // New builds the configured backend. "s3" is the one S3-backed layout:
