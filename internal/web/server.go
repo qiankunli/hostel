@@ -148,7 +148,7 @@ func (s *Server) opsOf(c *gin.Context) (*bed.Bed, *fsops.Ops) {
 	if b == nil {
 		return nil, nil
 	}
-	return b, fsops.New(b.Root)
+	return b, fsops.New(b.Home)
 }
 
 func (s *Server) healthz(c *gin.Context) {

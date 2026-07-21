@@ -177,12 +177,12 @@ func (u *uidIso) Available() bool    { return true } // only constructed when th
 func (u *uidIso) MountPoint() string { return "" }   // no remount; real host paths
 
 func (u *uidIso) Wrap(cmd *exec.Cmd, ws Workspace) error {
-	// Prefix `hostel __asuser <uid> <bed private root> --` so the child drops
-	// to the bed uid, then execs the user command. The uid derives from Root
+	// Prefix `hostel __asuser <uid> <bed_home> --` so the child drops
+	// to the bed uid, then execs the user command. The uid derives from bed_home
 	// (stable per bed dir); cmd.Dir gives the parent its start dir — the
 	// workspace subdir; the child re-chdirs there anyway after dropping.
-	uid := bedUID(ws.Root)
-	prefix := []string{u.self, AsUserArg, strconv.Itoa(uid), ws.Root, "--"}
+	uid := bedUID(ws.Home)
+	prefix := []string{u.self, AsUserArg, strconv.Itoa(uid), ws.Home, "--"}
 	userArgs := cmd.Args
 	cmd.Args = make([]string, 0, len(prefix)+len(userArgs))
 	cmd.Args = append(cmd.Args, prefix...)
@@ -192,12 +192,12 @@ func (u *uidIso) Wrap(cmd *exec.Cmd, ws Workspace) error {
 	return nil
 }
 
-// Prepare hands the bed's private root to its dedicated uid: 0700 on the dir
+// Prepare hands bed_home to its dedicated uid: 0700 on the dir
 // so siblings can't enter, owned recursively by the uid so the bed can read
 // and write its own files. Implements Preparer; the bed manager calls it after
 // the dir is (re)created — including after a restore repopulated the tree.
 func (u *uidIso) Prepare(ws Workspace) error {
-	return prepareUIDDir(ws.Root, bedUID(ws.Root))
+	return prepareUIDDir(ws.Home, bedUID(ws.Home))
 }
 
 func prepareUIDDir(dir string, uid int) error {

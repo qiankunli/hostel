@@ -105,7 +105,7 @@ func TestUploadInfoDownloadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAbsolutePathAndCommandCwdShareBedRoot(t *testing.T) {
+func TestAbsolutePathAndCommandCwdShareBedHome(t *testing.T) {
 	s := newTestServer(t)
 	const clientPath = "/tmp/workspace/job/input.txt"
 

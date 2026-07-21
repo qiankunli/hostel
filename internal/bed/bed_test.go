@@ -864,10 +864,10 @@ func TestBedDirLayoutAndMetaAcrossRestart(t *testing.T) {
 	m, _ := NewManager(root, "default", "/bin/bash", isolation.New("dorm", root), nil, 0, nil)
 
 	b, _ := m.Resolve("default")
-	// Layout: {root}/default/{meta.json,data/workspace}; Root is the private
+	// Layout: {root}/default/{meta.json,data/workspace}; Home is the bed_home
 	// root (data), Workspace the real subdir below it.
-	if b.Root != filepath.Join(root, "default", "data") {
-		t.Fatalf("Root = %s", b.Root)
+	if b.Home != filepath.Join(root, "default", "data") {
+		t.Fatalf("Home = %s", b.Home)
 	}
 	if b.Workspace != filepath.Join(root, "default", "data", "workspace") {
 		t.Fatalf("Workspace = %s", b.Workspace)

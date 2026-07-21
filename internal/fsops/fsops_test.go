@@ -33,8 +33,8 @@ func TestResolveConfinement(t *testing.T) {
 		{"/workspace/a.txt", false, filepath.Join(root, "workspace", "a.txt")},
 		{"/workspace", false, filepath.Join(root, "workspace")}, // a real subdir, not an alias for the root
 		{"/workspace/sub/b", false, filepath.Join(root, "workspace", "sub", "b")},
-		{"/", false, root}, // the client's "/" is the bed's private root
-		{"/workspace/../../etc/passwd", false, filepath.Join(root, "etc", "passwd")}, // .. neutralized under the private root
+		{"/", false, root}, // the client's "/" is bed_home
+		{"/workspace/../../etc/passwd", false, filepath.Join(root, "etc", "passwd")}, // .. neutralized under bed_home
 		{"../escape", false, filepath.Join(root, "escape")},                          // climbs out of the workspace but never out of the bed
 		{"/etc/passwd", false, filepath.Join(root, "etc", "passwd")},                 // absolute paths are bed-rooted
 		{"~/secrets", true, ""},

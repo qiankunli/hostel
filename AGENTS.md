@@ -16,8 +16,8 @@
 - **bed id**：bed 的标识，**由调用方给定、对 hostel 不透明**——hostel 不解释其业务语义（不认识 conversation / tenant 等上层概念，也不据此派生任何子目录）；缺省兜底 id 为 `default`。
 - **workspace-root**：所有 bed 目录的**父目录**，**可配、不写死**（`--workspace-root` / `HOSTEL_WORKSPACE_ROOT`，默认 `/workspace`）；**daemon 启动时创建一次**。
 - **bed 目录**：`{workspace-root}/{bed id}`，含 `meta.json`（可移植身份）+ `data/`；**该 bed 首次被 Resolve（即首次收到指向它的请求）时惰性创建**。
-- **bed 私有根（data 目录）**：`{bed 目录}/data`——**客户端视角的 `/`**，bed 表现得像独占整个 pod fs：任意客户端绝对路径单射 rebase 到它下面、回显对称；持久化 / 快照的对象，bed 只见它。
-- **bed workspace**：`{私有根}/workspace` 真实子目录（非别名）——OpenSandbox 契约的 `/workspace`（`fsops.VirtualPrefix`）、相对路径的基准、默认 cwd、suite 下的真实挂载点。
+- **bed_home（data 目录）**：`{bed 目录}/data`——**客户端视角的 `/`**，bed 表现得像独占整个 pod fs：任意客户端绝对路径单射 rebase 到它下面、回显对称；持久化 / 快照的对象，bed 只见它。
+- **bed workspace**：`bed_home/workspace` 真实子目录（非别名）——OpenSandbox 契约的 `/workspace`（`fsops.VirtualPrefix`）、相对路径的基准、默认 cwd、suite 下的真实挂载点。
 - **房型（dorm / room / suite）**：bed 的隔离档，与 bed 正交（见〈关键约定〉isolation）。
 - **luggage**：bed evict 后留在本机的现场缓存（快照才是身份，luggage 只是加速）。
 - **amenity**：bed 外由 hostel 统一管理的共享重资产设施（Chromium / Jupyter…）。
@@ -34,7 +34,7 @@ tini (pid1)                       pod 级收尸兜底
 ```
 bed-init：S1 spawner 版已落地；S2 = suite 档持久 namespace 的 PID-1（待 userns）。
 
-**路径模型**（客户端 `/` = bed 私有根，映射单射、回显对称；调用方以 `capabilities.workspace_mount` 探测挂载语义）：
+**路径模型**（客户端 `/` = `bed_home`，映射单射、回显对称；调用方以 `capabilities.workspace_mount` 探测挂载语义）：
 
 ```
 客户端任意路径：/workspace/x → data/workspace/x；/tmp/x → data/tmp/x；相对路径 = workspace 相对
@@ -43,10 +43,10 @@ bed-init：S1 spawner 版已落地；S2 = suite 档持久 namespace 的 PID-1（
 <workspace-root>/                 宿主侧，所有 bed 父目录；可配 HOSTEL_WORKSPACE_ROOT，默认 /workspace，daemon 启动建
 └─ <bed id>/                      bed 目录；首次 Resolve 惰性建
    ├─ meta.json                   可移植身份
-   └─ data/                       bed 私有根（客户端的 /）；持久化/快照对象
+   └─ data/                       bed_home（客户端的 /）；持久化/快照对象
       └─ workspace/               OpenSandbox workspace，真实子目录
-           suite       → bind 挂载到沙箱内 /workspace（shell 路径 == file API 路径；私有根其余部分无进程视图名）
-           direct/room → 无挂载，shell cwd = 宿主真实目录（整个私有根可达）
+           suite       → bind 挂载到沙箱内 /workspace（shell 路径 == file API 路径；bed_home 其余部分无进程视图名）
+           direct/room → 无挂载，shell cwd = 宿主真实目录（整个 bed_home 可达）
 ```
 
 ## 代码地图与核心模块
@@ -62,7 +62,7 @@ internal/
 │   ├── luggage.go     luggage（evict 留下的现场缓存）：磁盘水位 GC（stale 优先→LRU）、Inventory（调度器视图）
 │   ├── shell.go       常驻 bash：单 reader goroutine→lines chan，Run 用 marker 分帧、单消费（状态跨 run 保持）
 │   └── command.go     一次性命令 registry：前台/后台、status、logs（cursor 增量、环形缓冲）
-├── fsops/             bed 私有根 rooted 文件操作；Resolve 把任意客户端路径单射 rebase 进私有根 + 拒逃逸；新建路径按属主 chown（单一属主不变式）
+├── fsops/             bed_home rooted 文件操作；Resolve 把任意客户端路径单射 rebase 进 bed_home + 拒逃逸；新建路径按属主 chown（单一属主不变式）
 ├── store/             workspace 持久化：Store 接口 + noop/s3(desync 内容寻址增量,只传变更块)，默认 auto 按 bucket 有无解析；见 docs/persistence.md
 ├── amenity/           Amenity 接口(生命周期 State)+ Registry；chromium 实例(共享浏览器/每 bed BrowserContext)；见 docs/amenity.md
 └── web/               gin 薄适配层：server(路由+bedOf 解析) / errors / sse / files / command / beds
