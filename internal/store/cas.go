@@ -172,7 +172,7 @@ func (s *casStore) Persist(ctx context.Context, bedID, dir string, generation in
 	}
 	putCtx, cancel := context.WithTimeout(ctx, s3OpTimeout)
 	defer cancel()
-	err = s.obj.put(putCtx, s.indexKey(bedID), &buf, int64(buf.Len()), map[string]string{
+	err = s.obj.put(putCtx, s.indexKey(bedID), bytes.NewReader(buf.Bytes()), int64(buf.Len()), map[string]string{
 		generationMetaKey: strconv.FormatInt(generation, 10),
 		casMetaBytes:      strconv.FormatInt(idx.Length(), 10),
 	})
